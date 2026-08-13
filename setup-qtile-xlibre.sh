@@ -7,10 +7,14 @@ echo "==> Updating system"
 sudo dnf update -y
 
 echo "==> Installing core X11 stack (xinit, drivers, dbus, mesa)"
+# Note: xorg-x11-server-utils was retired in Fedora ~2021 and split into
+# individual packages. xrandr/xset/xsetroot are the commonly-needed ones.
 sudo dnf install -y \
-  xorg-x11-server-utils \
   xorg-x11-xinit \
   xorg-x11-drivers \
+  xrandr \
+  xset \
+  xsetroot \
   dbus-x11 \
   mesa-dri-drivers
 
@@ -25,21 +29,29 @@ sudo dnf install -y --allowerasing \
 echo "==> Installing Qtile + a terminal emulator"
 sudo dnf install -y qtile alacritty
 
-echo "==> Setting up Qtile config"
-mkdir -p "$HOME/.config/qtile"
-if [ ! -f "$HOME/.config/qtile/config.py" ]; then
-  cp /usr/share/doc/qtile/default_config.py "$HOME/.config/qtile/config.py"
-fi
-
 echo "==> Writing ~/.xinitrc"
 cat > "$HOME/.xinitrc" <<'EOF'
 exec qtile start
 EOF
 chmod +x "$HOME/.xinitrc"
 
+echo "==> Installing LightDM"
+sudo dnf install -y lightdm lightdm-gtk-greeter
+
+echo "==> Setting Qtile as the default LightDM session"
+sudo mkdir -p /etc/lightdm/lightdm.conf.d
+sudo tee /etc/lightdm/lightdm.conf.d/50-qtile.conf > /dev/null <<'EOF'
+[Seat:*]
+user-session=qtile
+EOF
+
+echo "==> Setting graphical target as default boot target"
+sudo systemctl set-default graphical.target
+
+echo "==> Enabling and starting LightDM"
+sudo systemctl enable lightdm --now
+
 echo "==> Done."
-echo "Log in at the console and run 'startx' to launch Qtile on XLibre."
-echo ""
-echo "Optional: for a graphical login manager instead of startx, run:"
-echo "  sudo dnf install -y lightdm lightdm-gtk-greeter"
-echo "  sudo systemctl enable lightdm --now"
+echo "LightDM is running and will start automatically on boot, with Qtile"
+echo "pre-selected as the session. Reboot to land straight on the login screen:"
+echo "  sudo reboot"
