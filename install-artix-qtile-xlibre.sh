@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Artix Linux + XLibre + Qtile installer
+# Artix Linux + XLibre + dwm installer
 # UEFI / OpenRC / XFS / LightDM / PipeWire / ConnMan / Flatpak
 #
 # Default target: /dev/nvme0n1
@@ -115,8 +115,6 @@ fi
 
 ###############################################################################
 # Collect user password
-#
-# This happens before the disk is touched.
 ###############################################################################
 
 echo
@@ -182,7 +180,7 @@ echo "System:"
 echo "    Artix Linux"
 echo "    OpenRC"
 echo "    XLibre"
-echo "    Qtile"
+echo "    dwm"
 echo "    LightDM"
 echo
 echo "User:"
@@ -337,8 +335,6 @@ EOF
 
 ###############################################################################
 # Store user password
-#
-# Only root can read this file.
 ###############################################################################
 
 printf '%s' "$USER_PASSWORD" > "$MNT/root/user-password"
@@ -497,12 +493,6 @@ pacman -Sy --needed --noconfirm \
 pacman-key --populate artix
 pacman-key --populate archlinux
 
-#
-# Only Arch extra is enabled.
-#
-# community and multilib are intentionally NOT enabled.
-#
-
 if ! grep -q '^\[extra\]' /etc/pacman.conf; then
 
     cat >> /etc/pacman.conf <<'EOFARCH'
@@ -534,7 +524,7 @@ log "Checking required packages..."
 REQUIRED_PACKAGES=(
     xlibre-meta
     xlibre-video-amdgpu
-    qtile
+    dwm
     lightdm
     lightdm-gtk-greeter
     lightdm-openrc
@@ -577,13 +567,13 @@ pacman -S --needed --noconfirm \
     xclip
 
 ###############################################################################
-# Qtile / LightDM / desktop utilities
+# dwm / LightDM / desktop utilities
 ###############################################################################
 
-log "Installing Qtile and desktop components..."
+log "Installing dwm and desktop components..."
 
 pacman -S --needed --noconfirm \
-    qtile \
+    dwm \
     alacritty \
     lightdm \
     lightdm-gtk-greeter \
@@ -717,20 +707,20 @@ log "Locking root account..."
 passwd -l root
 
 ###############################################################################
-# Qtile XSession
+# dwm XSession
 ###############################################################################
 
-log "Creating Qtile desktop session..."
+log "Creating dwm desktop session..."
 
 mkdir -p /usr/share/xsessions
 
-cat > /usr/share/xsessions/qtile.desktop <<'EOF'
+cat > /usr/share/xsessions/dwm.desktop <<'EOF'
 [Desktop Entry]
-Name=Qtile
-Comment=Qtile Window Manager
-Exec=qtile start
+Name=dwm
+Comment=Dynamic Window Manager
+Exec=dwm
 Type=Application
-DesktopNames=Qtile
+DesktopNames=dwm
 EOF
 
 ###############################################################################
@@ -742,75 +732,8 @@ log "Configuring LightDM..."
 cat > /etc/lightdm/lightdm.conf <<'EOF'
 [Seat:*]
 greeter-session=lightdm-gtk-greeter
-user-session=qtile
+user-session=dwm
 EOF
-
-###############################################################################
-# Starter Qtile configuration
-###############################################################################
-
-log "Creating starter Qtile configuration..."
-
-USER_HOME="/home/${USERNAME}"
-
-mkdir -p "${USER_HOME}/.config/qtile"
-
-cat > "${USER_HOME}/.config/qtile/config.py" <<'EOF'
-from libqtile import bar, layout, widget
-from libqtile.config import Key, Screen
-from libqtile.lazy import lazy
-from libqtile.utils import guess_terminal
-
-mod = "mod4"
-terminal = guess_terminal()
-
-keys = [
-    Key([mod], "Return", lazy.spawn(terminal)),
-    Key([mod], "r", lazy.spawn("rofi -show drun")),
-    Key([mod], "q", lazy.window.kill()),
-    Key([mod, "shift"], "r", lazy.reload_config()),
-    Key([mod, "shift"], "q", lazy.shutdown()),
-]
-
-layouts = [
-    layout.Monadtall(),
-    layout.Max(),
-]
-
-widget_defaults = dict(
-    font="JetBrains Mono",
-    fontsize=14,
-    padding=3,
-)
-
-screens = [
-    Screen(
-        top=bar.Bar(
-            [
-                widget.GroupBox(),
-                widget.WindowName(),
-                widget.Clock(format="%Y-%m-%d %H:%M"),
-            ],
-            24,
-        )
-    )
-]
-
-dgroups_key_binder = None
-dgroups_app_rules = []
-
-follow_mouse_focus = True
-bring_front_click = False
-cursor_warp = False
-floating_layout = layout.Floating()
-auto_fullscreen = True
-focus_on_window_activation = "smart"
-
-wmname = "LG3D"
-EOF
-
-chown -R "${USERNAME}:${USERNAME}" \
-    "${USER_HOME}/.config"
 
 ###############################################################################
 # OpenRC services
@@ -922,9 +845,9 @@ pacman -Q xlibre-meta
 
 echo
 echo "============================================================"
-echo "QTILE"
+echo "DWM"
 echo "============================================================"
-pacman -Q qtile
+pacman -Q dwm
 
 echo
 echo "============================================================"
@@ -945,7 +868,7 @@ echo "============================================================"
 echo
 echo "Username:   ${USERNAME}"
 echo "Hostname:   ${HOSTNAME}"
-echo "Desktop:    Qtile"
+echo "Desktop:    dwm"
 echo "Display:    XLibre"
 echo "Init:       OpenRC"
 echo "Filesystem: XFS"
@@ -1020,7 +943,7 @@ echo "Hostname:   $HOSTNAME"
 echo "Username:   $USERNAME"
 echo "Timezone:   $TIMEZONE"
 echo
-echo "Desktop:    Qtile"
+echo "Desktop:    dwm"
 echo "Display:    XLibre"
 echo "Init:       OpenRC"
 echo "Filesystem: XFS"
