@@ -1,13 +1,16 @@
 #!/bin/bash
+
+set -euo pipefail
+
+###############################################################################
+# Artix Linux + OpenRC + XLibre + Custom dwm
 #
-# Artix Linux + OpenRC + XLibre + dwm
 # UEFI / GPT / XFS
+# Target: /dev/nvme0n1
 #
 # WARNING:
 # THIS SCRIPT ERASES THE TARGET DISK.
-#
-
-set -euo pipefail
+###############################################################################
 
 TARGET_DISK="/dev/nvme0n1"
 MOUNTPOINT="/mnt"
@@ -15,7 +18,7 @@ MOUNTPOINT="/mnt"
 EFI_PART="${TARGET_DISK}p1"
 ROOT_PART="${TARGET_DISK}p2"
 
-USERNAME="mike"
+DEFAULT_USERNAME="mike"
 DEFAULT_HOSTNAME="artix"
 DEFAULT_TIMEZONE="America/New_York"
 DEFAULT_KEYMAP="us"
@@ -23,8 +26,6 @@ DEFAULT_LOCALE="en_US.UTF-8"
 
 DWM_VERSION="6.6"
 DWM_URL="https://dl.suckless.org/dwm/dwm-${DWM_VERSION}.tar.gz"
-
-SCRIPT_NAME="$(basename "$0")"
 
 ###############################################################################
 # Helpers
@@ -43,23 +44,27 @@ msg() {
     echo "============================================================"
 }
 
-command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"
-
 ###############################################################################
-# Basic checks
+# Initial checks
 ###############################################################################
 
-[[ "$EUID" -eq 0 ]] || die "Run this script as root."
+if [[ "$EUID" -ne 0 ]]; then
+    die "Run this script as root."
+fi
 
-[[ -d /sys/firmware/efi ]] || die "System is not booted in UEFI mode."
+if [[ ! -d /sys/firmware/efi ]]; then
+    die "System is not booted in UEFI mode."
+fi
 
-[[ -b "$TARGET_DISK" ]] || die "Target disk $TARGET_DISK does not exist."
+if [[ ! -b "$TARGET_DISK" ]]; then
+    die "Target disk $TARGET_DISK does not exist."
+fi
 
-msg "Artix + XLibre + dwm installer"
+msg "Artix Linux + XLibre + Custom dwm Installer"
 
 echo "Target disk : $TARGET_DISK"
 echo "Hostname    : $DEFAULT_HOSTNAME"
-echo "Username    : $USERNAME"
+echo "Username    : $DEFAULT_USERNAME"
 echo "Timezone    : $DEFAULT_TIMEZONE"
 echo "Keyboard    : $DEFAULT_KEYMAP"
 echo "Locale      : $DEFAULT_LOCALE"
@@ -70,8 +75,9 @@ echo "Init        : OpenRC"
 echo "Filesystem  : XFS"
 echo
 
-ping -c 1 -W 3 artixlinux.org >/dev/null 2>&1 \
-    || die "No network connection."
+if ! ping -c 1 -W 3 artixlinux.org >/dev/null 2>&1; then
+    die "No network connection."
+fi
 
 ###############################################################################
 # User configuration
@@ -80,8 +86,8 @@ ping -c 1 -W 3 artixlinux.org >/dev/null 2>&1 \
 read -rp "Hostname [$DEFAULT_HOSTNAME]: " HOSTNAME
 HOSTNAME="${HOSTNAME:-$DEFAULT_HOSTNAME}"
 
-read -rp "Username [$USERNAME]: " INPUT_USERNAME
-USERNAME="${INPUT_USERNAME:-$USERNAME}"
+read -rp "Username [$DEFAULT_USERNAME]: " USERNAME
+USERNAME="${USERNAME:-$DEFAULT_USERNAME}"
 
 read -rp "Timezone [$DEFAULT_TIMEZONE]: " TIMEZONE
 TIMEZONE="${TIMEZONE:-$DEFAULT_TIMEZONE}"
@@ -98,13 +104,17 @@ echo
 
 read -rsp "Password: " USER_PASSWORD
 echo
+
 read -rsp "Confirm password: " USER_PASSWORD_CONFIRM
 echo
 
-[[ "$USER_PASSWORD" == "$USER_PASSWORD_CONFIRM" ]] \
-    || die "Passwords do not match."
+if [[ "$USER_PASSWORD" != "$USER_PASSWORD_CONFIRM" ]]; then
+    die "Passwords do not match."
+fi
 
-[[ -n "$USER_PASSWORD" ]] || die "Password cannot be empty."
+if [[ -z "$USER_PASSWORD" ]]; then
+    die "Password cannot be empty."
+fi
 
 ###############################################################################
 # Final confirmation
@@ -115,28 +125,32 @@ echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
 echo "THIS WILL ERASE:"
 echo "    $TARGET_DISK"
 echo
-echo "All existing partitions and data on this disk will be destroyed."
+echo "ALL DATA ON THIS DISK WILL BE DESTROYED."
 echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
 echo
 
 read -rp "Type ERASE to continue: " CONFIRM
 
-[[ "$CONFIRM" == "ERASE" ]] \
-    || die "Installation cancelled."
+if [[ "$CONFIRM" != "ERASE" ]]; then
+    die "Installation cancelled."
+fi
 
 ###############################################################################
-# Install live-environment tools
+# Live environment packages
 ###############################################################################
 
 msg "Installing live environment tools"
 
-pacman -Sy --noconfirm gptfdisk parted
+pacman -Sy --noconfirm \
+    gptfdisk \
+    parted \
+    git
 
 ###############################################################################
-# Wipe and partition disk
+# Disk preparation
 ###############################################################################
 
-msg "Wiping and partitioning $TARGET_DISK"
+msg "Wiping $TARGET_DISK"
 
 umount -R "$MOUNTPOINT" 2>/dev/null || true
 
@@ -158,20 +172,20 @@ partprobe "$TARGET_DISK"
 sleep 2
 
 ###############################################################################
-# Format partitions
+# Filesystems
 ###############################################################################
 
-msg "Formatting partitions"
+msg "Formatting filesystems"
 
 mkfs.fat -F32 "$EFI_PART"
 
 mkfs.xfs -f "$ROOT_PART"
 
 ###############################################################################
-# Mount filesystem
+# Mount
 ###############################################################################
 
-msg "Mounting filesystem"
+msg "Mounting target filesystem"
 
 mount "$ROOT_PART" "$MOUNTPOINT"
 
@@ -180,7 +194,7 @@ mkdir -p "$MOUNTPOINT/boot/efi"
 mount "$EFI_PART" "$MOUNTPOINT/boot/efi"
 
 ###############################################################################
-# Base installation
+# Base Artix installation
 ###############################################################################
 
 msg "Installing Artix base system"
@@ -216,7 +230,7 @@ msg "Generating fstab"
 fstabgen -U "$MOUNTPOINT" >> "$MOUNTPOINT/etc/fstab"
 
 ###############################################################################
-# Save installer variables
+# Installation variables
 ###############################################################################
 
 cat > "$MOUNTPOINT/root/install-vars" <<EOF
@@ -232,17 +246,18 @@ EOF
 chmod 600 "$MOUNTPOINT/root/install-vars"
 
 ###############################################################################
-# Store password temporarily
+# Temporary password
 ###############################################################################
 
 printf '%s' "$USER_PASSWORD" > "$MOUNTPOINT/root/user-password"
+
 chmod 600 "$MOUNTPOINT/root/user-password"
 
 unset USER_PASSWORD
 unset USER_PASSWORD_CONFIRM
 
 ###############################################################################
-# Create chroot installer
+# Chroot installer
 ###############################################################################
 
 cat > "$MOUNTPOINT/root/install-chroot.sh" <<'CHROOT_SCRIPT'
@@ -272,7 +287,7 @@ msg() {
 }
 
 ###############################################################################
-# Basic configuration
+# Timezone
 ###############################################################################
 
 msg "Configuring timezone"
@@ -325,16 +340,6 @@ EOF
 
 msg "Configuring XLibre repository"
 
-curl -fsSL \
-    -o /tmp/xlibre-artixlinux.asc \
-    https://xlibre-artix.github.io/xlibre-artixlinux.asc
-
-pacman-key --add /tmp/xlibre-artixlinux.asc
-
-pacman-key --lsign-key 2AFFCD7B42ADD2E7
-
-rm -f /tmp/xlibre-artixlinux.asc
-
 if ! grep -q "^\[xlibre-stable\]" /etc/pacman.conf; then
     sed -i \
         '/^\[world\]/i\
@@ -345,15 +350,15 @@ Server = https://github.com/xlibre-artix/stable/releases/download/$arch\
 fi
 
 ###############################################################################
-# Arch extra support
+# Arch repositories
 ###############################################################################
 
-msg "Configuring Arch repositories"
+msg "Configuring Arch package support"
 
 pacman -S --noconfirm artix-archlinux-support
 
 ###############################################################################
-# Refresh repositories
+# Repository refresh
 ###############################################################################
 
 msg "Refreshing package databases"
@@ -361,7 +366,7 @@ msg "Refreshing package databases"
 pacman -Syy --noconfirm
 
 ###############################################################################
-# Preflight
+# Preflight package check
 ###############################################################################
 
 msg "Checking required packages"
@@ -405,7 +410,6 @@ REQUIRED_PACKAGES=(
     libxft
     libxinerama
     xorgproto
-
     fontconfig
     freetype2
 )
@@ -427,7 +431,7 @@ msg "Updating system"
 pacman -Su --noconfirm
 
 ###############################################################################
-# Install XLibre
+# XLibre
 ###############################################################################
 
 msg "Installing XLibre"
@@ -439,7 +443,7 @@ pacman -S --noconfirm \
     xorg-xdpyinfo
 
 ###############################################################################
-# Desktop / X utilities
+# Desktop utilities
 ###############################################################################
 
 msg "Installing desktop utilities"
@@ -472,7 +476,7 @@ pacman -S --noconfirm \
     rtkit
 
 ###############################################################################
-# Network / Bluetooth
+# Networking / Bluetooth
 ###############################################################################
 
 msg "Installing networking and Bluetooth"
@@ -508,31 +512,32 @@ pacman -S --noconfirm \
     ttf-liberation
 
 ###############################################################################
-# Development tools
+# Dwm build dependencies
 ###############################################################################
 
-msg "Installing development tools"
+msg "Installing dwm build dependencies"
 
 pacman -S --noconfirm \
     base-devel \
-    git \
-    curl \
-    wget \
-    nano
+    libx11 \
+    libxft \
+    libxinerama \
+    xorgproto \
+    fontconfig \
+    freetype2
 
 ###############################################################################
 # Build custom dwm
 ###############################################################################
 
-msg "Building custom dwm ${DWM_VERSION}"
-
-DWM_BUILD_DIR="/usr/local/src/dwm-${DWM_VERSION}"
-
-rm -rf "$DWM_BUILD_DIR"
+msg "Downloading dwm ${DWM_VERSION}"
 
 mkdir -p /usr/local/src
 
 cd /usr/local/src
+
+rm -rf "dwm-${DWM_VERSION}"
+rm -f "dwm-${DWM_VERSION}.tar.gz"
 
 curl -fL \
     "$DWM_URL" \
@@ -540,11 +545,13 @@ curl -fL \
 
 tar -xzf "dwm-${DWM_VERSION}.tar.gz"
 
-cd "$DWM_BUILD_DIR"
+cd "dwm-${DWM_VERSION}"
 
 ###############################################################################
-# Custom dwm config
+# Custom dwm configuration
 ###############################################################################
+
+msg "Creating custom dwm configuration"
 
 cat > config.h <<'DWM_CONFIG'
 /* See LICENSE file for copyright and license details. */
@@ -581,9 +588,7 @@ static const char *tags[] = {
 };
 
 static const Rule rules[] = {
-    /*
-     * class      instance    title       tags mask     isfloating   monitor
-     */
+    /* class      instance    title       tags mask     isfloating   monitor */
 };
 
 /* layout */
@@ -591,8 +596,6 @@ static const Rule rules[] = {
 static const float mfact     = 0.55;
 static const int nmaster     = 1;
 static const int resizehints = 1;
-static const int lockfullscreen = 1;
-static const int refreshrate = 120;
 
 static const Layout layouts[] = {
     { "[]=",      tile },
@@ -600,7 +603,7 @@ static const Layout layouts[] = {
     { "[M]",      monocle },
 };
 
-/* key definitions */
+/* commands */
 
 #define MODKEY Mod4Mask
 
@@ -633,7 +636,7 @@ static const Key keys[] = {
     /* terminal */
     { MODKEY, XK_Return, spawn, {.v = termcmd} },
 
-    /* application launcher */
+    /* launcher */
     { MODKEY, XK_r, spawn, {.v = roficmd} },
 
     /* close window */
@@ -650,17 +653,17 @@ static const Key keys[] = {
     { MODKEY, XK_i, incnmaster, {.i = +1} },
     { MODKEY, XK_d, incnmaster, {.i = -1} },
 
-    /* master area size */
+    /* master size */
     { MODKEY, XK_h, setmfact, {.f = -0.05} },
     { MODKEY, XK_l, setmfact, {.f = +0.05} },
 
-    /* layout */
+    /* cycle layouts */
     { MODKEY, XK_space, setlayout, {0} },
 
-    /* floating */
+    /* toggle floating */
     { MODKEY|ShiftMask, XK_space, togglefloating, {0} },
 
-    /* bar */
+    /* toggle bar */
     { MODKEY, XK_b, togglebar, {0} },
 
     /* fullscreen */
@@ -672,7 +675,6 @@ static const Key keys[] = {
         spawn, SHCMD("i3lock -c 000000") },
 
     /* workspaces */
-
     TAGKEYS(XK_1, 0)
     TAGKEYS(XK_2, 1)
     TAGKEYS(XK_3, 2)
@@ -688,8 +690,9 @@ static const Key keys[] = {
 
 static const Button buttons[] = {
 
-    /* click status bar */
-    { ClkStatusText, 0, Button1, sigstatusbar, {0} },
+    /* layout symbol */
+    { ClkLtSymbol, 0, Button1, setlayout, {0} },
+    { ClkLtSymbol, 0, Button3, setlayout, {.v = &layouts[2]} },
 
     /* move window */
     { ClkClientWin, MODKEY, Button1, movemouse, {0} },
@@ -697,34 +700,30 @@ static const Button buttons[] = {
     /* resize window */
     { ClkClientWin, MODKEY, Button3, resizemouse, {0} },
 
-    /* toggle floating with middle click */
+    /* toggle floating */
     { ClkClientWin, MODKEY, Button2, togglefloating, {0} },
 
     /* focus window */
-    { ClkClientWin, 0, Button1, focusonclick, {0} },
+    { ClkClientWin, 0, Button1, focus, {0} },
 };
 DWM_CONFIG
 
 ###############################################################################
-# Compile dwm
+# Compile / install dwm
 ###############################################################################
+
+msg "Compiling dwm"
 
 make clean
 make
 
-make install PREFIX=/usr/local
+msg "Installing custom dwm"
 
-###############################################################################
-# Verify custom dwm
-###############################################################################
+make PREFIX=/usr/local install
 
 if [[ ! -x /usr/local/bin/dwm ]]; then
     die "Custom dwm failed to install."
 fi
-
-echo
-echo "Custom dwm installed:"
-/usr/local/bin/dwm -v || true
 
 ###############################################################################
 # User account
@@ -745,13 +744,13 @@ else
 fi
 
 ###############################################################################
-# Set user password
+# Password
 ###############################################################################
 
 msg "Setting user password"
 
 if [[ ! -s "$PASSWORD_FILE" ]]; then
-    die "Password file missing."
+    die "Password file is missing."
 fi
 
 USER_PASSWORD="$(cat "$PASSWORD_FILE")"
@@ -761,13 +760,13 @@ printf '%s:%s\n' "$USERNAME" "$USER_PASSWORD" | chpasswd
 unset USER_PASSWORD
 
 ###############################################################################
-# Lock root account
+# Root account
 ###############################################################################
 
 passwd -l root
 
 ###############################################################################
-# Sudo configuration
+# Sudo
 ###############################################################################
 
 mkdir -p /etc/sudoers.d
@@ -779,7 +778,7 @@ EOF
 chmod 440 "/etc/sudoers.d/${USERNAME}"
 
 ###############################################################################
-# Dwm XSession
+# X session
 ###############################################################################
 
 msg "Configuring dwm X session"
@@ -808,23 +807,10 @@ user-session=dwm
 EOF
 
 ###############################################################################
-# LightDM GTK greeter
+# User configuration directories
 ###############################################################################
 
-cat > /etc/lightdm/lightdm-gtk-greeter.conf <<EOF
-[greeter]
-background=/usr/share/backgrounds/default.jpg
-theme-name=Adwaita
-icon-theme-name=Adwaita
-cursor-theme-name=Adwaita
-show-clock=true
-EOF
-
-###############################################################################
-# User directories
-###############################################################################
-
-msg "Creating user configuration directories"
+msg "Creating user configuration"
 
 install -d -o "$USERNAME" -g "$USERNAME" \
     "/home/$USERNAME/.config"
@@ -839,7 +825,7 @@ install -d -o "$USERNAME" -g "$USERNAME" \
     "/home/$USERNAME/.config/picom"
 
 ###############################################################################
-# Basic Rofi configuration
+# Rofi
 ###############################################################################
 
 cat > "/home/$USERNAME/.config/rofi/config.rasi" <<'EOF'
@@ -854,7 +840,7 @@ chown "$USERNAME:$USERNAME" \
     "/home/$USERNAME/.config/rofi/config.rasi"
 
 ###############################################################################
-# Basic Picom configuration
+# Picom
 ###############################################################################
 
 cat > "/home/$USERNAME/.config/picom/picom.conf" <<'EOF'
@@ -881,23 +867,17 @@ chown "$USERNAME:$USERNAME" \
     "/home/$USERNAME/.config/picom/picom.conf"
 
 ###############################################################################
-# .xprofile
+# X startup
 ###############################################################################
 
 cat > "/home/$USERNAME/.xprofile" <<'EOF'
 #!/bin/sh
 
-# Start notification daemon
 dunst &
-
-# Start compositor
 picom &
 
-# Wallpaper
-# Uncomment and set a wallpaper later:
+# Wallpaper can be added later:
 # feh --bg-fill ~/Pictures/wallpaper.jpg &
-
-# Optional Bluetooth applet can be started later.
 
 EOF
 
@@ -933,7 +913,7 @@ grub-install \
 grub-mkconfig -o /boot/grub/grub.cfg
 
 ###############################################################################
-# mkinitcpio
+# Initramfs
 ###############################################################################
 
 msg "Generating initramfs"
@@ -941,7 +921,7 @@ msg "Generating initramfs"
 mkinitcpio -P
 
 ###############################################################################
-# XLibre verification helper
+# XLibre checker
 ###############################################################################
 
 cat > /usr/local/bin/check-xlibre <<'EOF'
@@ -965,7 +945,7 @@ EOF
 chmod 755 /usr/local/bin/check-xlibre
 
 ###############################################################################
-# dwm verification helper
+# dwm checker
 ###############################################################################
 
 cat > /usr/local/bin/check-dwm <<'EOF'
@@ -980,25 +960,26 @@ echo "dwm version:"
 dwm -v 2>&1 || true
 
 echo
-echo "Desktop session:"
+echo "X session:"
 cat /usr/share/xsessions/dwm.desktop
 
 echo
-echo "Installed supporting packages:"
+echo "Supporting packages:"
 pacman -Q alacritty rofi i3lock wmctrl 2>/dev/null || true
 EOF
 
 chmod 755 /usr/local/bin/check-dwm
 
 ###############################################################################
-# Permissions / cleanup
+# Cleanup
 ###############################################################################
 
-chown -R "$USERNAME:$USERNAME" "/home/$USERNAME"
+msg "Cleaning temporary files"
 
 rm -f "$PASSWORD_FILE"
-
 rm -f /usr/local/src/dwm-"$DWM_VERSION".tar.gz
+
+chown -R "$USERNAME:$USERNAME" "/home/$USERNAME"
 
 ###############################################################################
 # Final verification
@@ -1007,61 +988,53 @@ rm -f /usr/local/src/dwm-"$DWM_VERSION".tar.gz
 msg "Final verification"
 
 echo
-echo "System:"
-echo "  Hostname : $HOSTNAME"
-echo "  User     : $USERNAME"
-echo "  Timezone : $TIMEZONE"
-echo "  Keyboard : $KEYMAP"
-echo "  Locale   : $LOCALE"
+echo "Hostname : $HOSTNAME"
+echo "User     : $USERNAME"
+echo "Timezone : $TIMEZONE"
+echo "Keyboard : $KEYMAP"
+echo "Locale   : $LOCALE"
 echo
 echo "Desktop:"
-echo "  Window manager : custom dwm ${DWM_VERSION}"
+echo "  Window manager : Custom dwm ${DWM_VERSION}"
 echo "  Display server : XLibre"
 echo "  Display manager: LightDM"
 echo "  Init           : OpenRC"
 echo "  Network        : ConnMan"
 echo "  Audio          : PipeWire"
 echo
-echo "dwm binary:"
+echo "dwm:"
 ls -l /usr/local/bin/dwm
 echo
-echo "XSession:"
+echo "X session:"
 cat /usr/share/xsessions/dwm.desktop
 
 echo
-echo "Enabled services:"
-rc-status --all || true
+echo "Custom keybindings:"
+echo "  Super + Enter           -> Alacritty"
+echo "  Super + R               -> Rofi"
+echo "  Super + Q               -> Close window"
+echo "  Super + Shift + Q       -> Quit dwm"
+echo "  Super + J / K           -> Focus next / previous"
+echo "  Super + I / D           -> Increase / decrease master count"
+echo "  Super + H / L           -> Shrink / grow master area"
+echo "  Super + Space           -> Cycle layout"
+echo "  Super + Shift + Space   -> Toggle floating"
+echo "  Super + B               -> Toggle bar"
+echo "  Super + F               -> Fullscreen"
+echo "  Super + Shift + E       -> Lock screen"
+echo "  Super + 1-9             -> Workspaces"
+echo "  Super + Shift + 1-9     -> Move window to workspace"
+echo "  Super + Left Mouse      -> Move window"
+echo "  Super + Right Mouse     -> Resize window"
 
 echo
-echo "Custom dwm keybindings:"
-echo "  Super + Enter       -> Alacritty"
-echo "  Super + R           -> Rofi"
-echo "  Super + Q           -> Close window"
-echo "  Super + Shift + Q   -> Quit dwm"
-echo "  Super + J/K         -> Focus"
-echo "  Super + I/D         -> Master count"
-echo "  Super + H/L         -> Master size"
-echo "  Super + Space       -> Cycle layout"
-echo "  Super + Shift + Space -> Toggle floating"
-echo "  Super + F           -> Fullscreen"
-echo "  Super + Shift + E   -> Lock screen"
-echo "  Super + B           -> Toggle bar"
-echo "  Super + 1-9         -> Workspaces"
-echo "  Super + Shift + 1-9 -> Move window to workspace"
-echo "  Super + Left Mouse  -> Move window"
-echo "  Super + Right Mouse -> Resize window"
-
-echo
-echo "Run these after logging in to verify:"
+echo "Verification commands after login:"
 echo "  check-dwm"
 echo "  check-xlibre"
 
-###############################################################################
-# End
-###############################################################################
-
 echo
 echo "Chroot installation complete."
+
 CHROOT_SCRIPT
 
 chmod 700 "$MOUNTPOINT/root/install-chroot.sh"
@@ -1070,21 +1043,17 @@ chmod 700 "$MOUNTPOINT/root/install-chroot.sh"
 # Run chroot
 ###############################################################################
 
-msg "Running Artix chroot configuration"
+msg "Running Artix chroot installer"
 
 artix-chroot "$MOUNTPOINT" /root/install-chroot.sh
 
 ###############################################################################
-# Remove temporary installer files
+# Cleanup installer files
 ###############################################################################
 
 rm -f "$MOUNTPOINT/root/install-vars"
 rm -f "$MOUNTPOINT/root/install-chroot.sh"
 rm -f "$MOUNTPOINT/root/user-password"
-
-###############################################################################
-# Sync
-###############################################################################
 
 sync
 
@@ -1092,12 +1061,12 @@ sync
 # Unmount
 ###############################################################################
 
-msg "Unmounting filesystem"
+msg "Unmounting target"
 
 umount -R "$MOUNTPOINT"
 
 ###############################################################################
-# Done
+# Finished
 ###############################################################################
 
 echo
@@ -1105,8 +1074,9 @@ echo "============================================================"
 echo "INSTALLATION COMPLETE"
 echo "============================================================"
 echo
-echo "Artix Linux has been installed with:"
+echo "Installed:"
 echo
+echo "  Artix Linux"
 echo "  OpenRC"
 echo "  XLibre"
 echo "  LightDM"
@@ -1118,10 +1088,9 @@ echo "  Flatpak"
 echo "  Alacritty"
 echo "  Rofi"
 echo
-echo "The first dwm session already has the custom keybindings."
+echo "The first dwm session includes the custom keybindings."
 echo
-echo "IMPORTANT:"
-echo "Remove the installation media before rebooting."
+echo "Remove the installation USB before rebooting."
 echo
 
 read -rp "Reboot now? [y/N]: " REBOOT_NOW
