@@ -86,8 +86,6 @@ command -v sgdisk >/dev/null 2>&1 || \
 command -v partprobe >/dev/null 2>&1 || \
     fail "partprobe is unavailable after installing parted."
 
-# Passwords are intentionally entered inside the target chroot.
-
 # ------------------------------------------------------------
 # Prepare disk
 # ------------------------------------------------------------
@@ -284,9 +282,6 @@ echo "==> Enabling Arch Linux repository support..."
 
 # artix-archlinux-support provides the Arch mirror list and
 # integration needed to use Arch repositories from Artix.
-#
-# Artix's support package is normally available through the
-# Artix universe repository.
 
 if ! grep -q '^\[universe\]' /etc/pacman.conf; then
 
@@ -302,19 +297,11 @@ fi
 
 pacman -Sy --needed --noconfirm artix-archlinux-support
 
-# Populate official Artix and Arch signing keys.
 pacman-key --populate artix
 pacman-key --populate archlinux
 
-# ------------------------------------------------------------
-# Arch repositories
-#
-# DO NOT enable Arch core.
-#
-# Artix's system/world/galaxy repositories must remain
-# authoritative for the base system.
-# ------------------------------------------------------------
-
+# Only Arch extra is enabled for now.
+# Community, multilib, and Steam are intentionally omitted.
 if ! grep -q '^\[extra\]' /etc/pacman.conf; then
 
     cat >> /etc/pacman.conf <<'EOFARCH'
@@ -322,9 +309,6 @@ if ! grep -q '^\[extra\]' /etc/pacman.conf; then
 # Arch Linux repositories
 
 [extra]
-Include = /etc/pacman.d/mirrorlist-arch
-
-[multilib]
 Include = /etc/pacman.d/mirrorlist-arch
 EOFARCH
 
@@ -336,7 +320,7 @@ fi
 echo
 echo "==> Configured repositories:"
 
-grep -E '^\[(system|xlibre-stable|world|galaxy|universe|extra|multilib)\]' \
+grep -E '^\[(system|xlibre-stable|world|galaxy|universe|extra)\]' \
     /etc/pacman.conf || true
 
 # ============================================================
@@ -354,7 +338,7 @@ echo "==> Performing complete system upgrade..."
 pacman -Su --noconfirm
 
 # ============================================================
-# Verify important packages before continuing
+# Verify required packages
 # ============================================================
 
 echo
@@ -366,9 +350,6 @@ REQUIRED_PACKAGES=(
     qtile
     lightdm
     lightdm-gtk-greeter
-    steam
-    obs-studio
-    kdenlive
 )
 
 for pkg in "${REQUIRED_PACKAGES[@]}"; do
@@ -467,19 +448,7 @@ pacman -S --needed --noconfirm \
     xdg-desktop-portal-gtk
 
 # ============================================================
-# Gaming / streaming / editing
-# ============================================================
-
-echo
-echo "==> Installing Steam, OBS and Kdenlive..."
-
-pacman -S --needed --noconfirm \
-    steam \
-    obs-studio \
-    kdenlive
-
-# ============================================================
-# Fonts / utilities / development tools
+# Utilities / fonts / development tools
 # ============================================================
 
 echo
@@ -648,8 +617,6 @@ rc-update add elogind boot || true
 rc-update add dbus default || true
 rc-update add lightdm default || true
 
-# Bluetooth service is only enabled if the OpenRC service
-# actually exists on this system.
 if [[ -x /etc/init.d/bluetooth ]]; then
     rc-update add bluetooth default || true
 fi
@@ -734,9 +701,7 @@ echo "  - PipeWire / WirePlumber"
 echo "  - NetworkManager"
 echo "  - Bluetooth"
 echo "  - Flatpak"
-echo "  - Steam"
-echo "  - OBS Studio"
-echo "  - Kdenlive"
+echo "  - X11 utilities"
 echo
 echo "After first login, run:"
 echo
