@@ -20,7 +20,7 @@
   networking.networkmanager.enable = true;
 
   # ------------------------------------------------------------
-  # X11
+  # X11 / LightDM / dwm
   # ------------------------------------------------------------
 
   services.xserver = {
@@ -33,15 +33,25 @@
       greeters.gtk.enable = true;
     };
 
-    windowManager.dwm.enable = true;
+    windowManager.dwm = {
+      enable = true;
+
+      package = pkgs.dwm.overrideAttrs (oldAttrs: {
+        postPatch = (oldAttrs.postPatch or "") + ''
+          cp ${./dwm-config.h} config.h
+        '';
+      });
+    };
   };
 
   # ------------------------------------------------------------
   # Graphics
   # ------------------------------------------------------------
 
-  hardware.graphics.enable = true;
-  hardware.graphics.enable32Bit = true;
+  hardware.graphics = {
+    enable = true;
+    enable32Bit = true;
+  };
 
   # ------------------------------------------------------------
   # Audio
@@ -108,7 +118,7 @@
     # XDG integration
     xdg-utils
 
-    # Audio control
+    # Audio
     pavucontrol
 
     # Development
@@ -127,13 +137,19 @@
     pciutils
     usbutils
 
-    # X11 troubleshooting / utilities
+    # X11 utilities
     xorg.xev
     xorg.xkill
     xorg.xrandr
     xorg.xdpyinfo
     xorg.xprop
   ];
+
+  # ------------------------------------------------------------
+  # Services
+  # ------------------------------------------------------------
+
+  services.libinput.enable = true;
 
   # ------------------------------------------------------------
   # Nix
