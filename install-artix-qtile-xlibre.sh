@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# Artix Linux OpenRC + XLibre + LightDM + Qtile
+# Artix Linux OpenRC + XLibre + LightDM + Qtile + ConnMan
 # UEFI / GPT / XFS / /dev/nvme0n1
 #
 # WARNING: THIS SCRIPT ERASES /dev/nvme0n1.
@@ -50,6 +50,7 @@ echo "Init:        OpenRC"
 echo "X server:    XLibre stable"
 echo "WM:          Qtile"
 echo "Display:     LightDM"
+echo "Network:     ConnMan"
 echo
 echo "THIS WILL ERASE $TARGET_DISK"
 echo
@@ -164,8 +165,8 @@ basestrap "$MNT" \
     xfsprogs \
     grub \
     efibootmgr \
-    networkmanager \
-    networkmanager-openrc \
+    connman \
+    connman-openrc \
     sudo \
     curl \
     wget \
@@ -257,7 +258,7 @@ pacman-key --finger 2AFFCD7B42ADD2E7
 
 pacman-key --lsign-key 2AFFCD7B42ADD2E7
 
-# The XLibre repository must be after [system] and before [world].
+# XLibre must be after [system] and before [world].
 if ! grep -q '^\[xlibre-stable\]' /etc/pacman.conf; then
 
     awk '
@@ -280,8 +281,8 @@ fi
 echo
 echo "==> Enabling Arch Linux repository support..."
 
-# artix-archlinux-support provides the Arch mirror list and
-# integration needed to use Arch repositories from Artix.
+# artix-archlinux-support provides the Arch repository
+# integration and Arch mirror list used by this installation.
 
 if ! grep -q '^\[universe\]' /etc/pacman.conf; then
 
@@ -300,13 +301,13 @@ pacman -Sy --needed --noconfirm artix-archlinux-support
 pacman-key --populate artix
 pacman-key --populate archlinux
 
-# Only Arch extra is enabled for now.
-# Community, multilib, and Steam are intentionally omitted.
+# Only Arch extra is enabled.
+# Community, multilib and Steam are intentionally omitted.
 if ! grep -q '^\[extra\]' /etc/pacman.conf; then
 
     cat >> /etc/pacman.conf <<'EOFARCH'
 
-# Arch Linux repositories
+# Arch Linux repository
 
 [extra]
 Include = /etc/pacman.d/mirrorlist-arch
@@ -350,6 +351,8 @@ REQUIRED_PACKAGES=(
     qtile
     lightdm
     lightdm-gtk-greeter
+    connman
+    connman-openrc
 )
 
 for pkg in "${REQUIRED_PACKAGES[@]}"; do
@@ -429,8 +432,8 @@ echo
 echo "==> Installing networking and Bluetooth..."
 
 pacman -S --needed --noconfirm \
-    networkmanager \
-    networkmanager-openrc \
+    connman \
+    connman-openrc \
     bluez \
     bluez-utils \
     blueman
@@ -480,7 +483,7 @@ echo "==> Creating user..."
 if ! id "$USERNAME" >/dev/null 2>&1; then
     useradd \
         -m \
-        -G wheel,networkmanager,audio,video \
+        -G wheel,audio,video \
         -s /bin/bash \
         "$USERNAME"
 fi
@@ -612,7 +615,7 @@ chown -R \
 echo
 echo "==> Configuring OpenRC services..."
 
-rc-update add NetworkManager default || true
+rc-update add connmand default || true
 rc-update add elogind boot || true
 rc-update add dbus default || true
 rc-update add lightdm default || true
@@ -698,7 +701,7 @@ echo "  - AMD XLibre driver"
 echo "  - LightDM"
 echo "  - Qtile"
 echo "  - PipeWire / WirePlumber"
-echo "  - NetworkManager"
+echo "  - ConnMan"
 echo "  - Bluetooth"
 echo "  - Flatpak"
 echo "  - X11 utilities"
