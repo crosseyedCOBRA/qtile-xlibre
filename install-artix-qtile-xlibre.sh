@@ -3,32 +3,47 @@
 set -Eeuo pipefail
 
 # ============================================================
-# Artix Linux OpenRC + XLibre + Qtile Installer
+# Artix Linux OpenRC + XLibre + Qtile
 #
-# Target:
+# Target hardware:
+#   Ryzen 7 7800X3D
+#   Radeon RX 7900 XT
+#
+# Target configuration:
 #   UEFI / GPT
-#   /dev/nvme0n1
 #   XFS
 #   OpenRC
 #   XLibre
 #   Qtile
 #   LightDM
-#   AMD RX 7900 XT
-#   Arch extra + multilib
+#   NetworkManager
+#   PipeWire
+#   Bluetooth
+#   Flatpak
+#   Steam
+#   Arch extra
+#   Arch multilib
 #
-# WARNING:
-#   THIS SCRIPT WILL ERASE /dev/nvme0n1.
+# USER:
+#   mike
 #
-# Run from an Artix OpenRC live ISO as root.
+# IMPORTANT:
+#   - /dev/nvme0n1 WILL BE ERASED
+#   - ROOT PASSWORD IS NOT SET
+#   - ROOT ACCOUNT IS LOCKED
+#   - mike gets passwordless sudo
 # ============================================================
 
 DISK="/dev/nvme0n1"
+EFI="${DISK}p1"
+ROOT="${DISK}p2"
+
+MNT="/mnt"
+
+USERNAME="mike"
 HOSTNAME="artix"
 TIMEZONE="America/New_York"
 LOCALE="en_US.UTF-8"
-USERNAME="mike"
-
-MNT="/mnt"
 
 # ------------------------------------------------------------
 # Colors
@@ -52,73 +67,66 @@ warning() {
     echo -e "${YELLOW}WARNING:${RESET} $*"
 }
 
-error() {
-    echo -e "${RED}ERROR:${RESET} $*" >&2
-}
-
 die() {
-    error "$*"
+    echo -e "${RED}ERROR:${RESET} $*" >&2
     exit 1
 }
 
-# ------------------------------------------------------------
-# Error handler
-# ------------------------------------------------------------
+trap 'die "Installation failed at line $LINENO."' ERR
 
-trap 'error "Installation failed at line $LINENO."; error "The installed system may be incomplete."' ERR
-
-# ------------------------------------------------------------
-# Must be root
-# ------------------------------------------------------------
+# ============================================================
+# PRE-FLIGHT
+# ============================================================
 
 if [[ $EUID -ne 0 ]]; then
-    die "Run this script as root."
+    die "Run this script as root from the Artix live ISO."
 fi
-
-# ------------------------------------------------------------
-# Verify we're booted in UEFI mode
-# ------------------------------------------------------------
 
 if [[ ! -d /sys/firmware/efi ]]; then
-    die "System is not booted in UEFI mode."
+    die "The live ISO is not booted in UEFI mode."
 fi
-
-# ------------------------------------------------------------
-# Verify disk exists
-# ------------------------------------------------------------
 
 if [[ ! -b "$DISK" ]]; then
     die "$DISK does not exist."
 fi
 
-# ------------------------------------------------------------
-# Verify network
-# ------------------------------------------------------------
-
-info "Testing network connectivity..."
+info "Checking network..."
 
 if ! ping -c 2 -W 3 artixlinux.org >/dev/null 2>&1; then
-    die "No network connectivity. Connect to the network first."
+    die "No network connectivity. Connect to the Internet before running this script."
 fi
 
-success "Network connectivity confirmed."
+success "Network is working."
 
-# ------------------------------------------------------------
-# Final warning
-# ------------------------------------------------------------
+# ============================================================
+# LIVE ISO DEPENDENCIES
+# ============================================================
+
+info "Installing live-ISO tools required by the installer..."
+
+pacman -Sy --needed --noconfirm \
+    parted \
+    dosfstools \
+    xfsprogs \
+    gptfdisk \
+    util-linux
+
+# ============================================================
+# WARNING
+# ============================================================
 
 clear
 
 echo
 echo "============================================================"
-echo "        ARTIX + OPENRC + XLIBRE + QTILE INSTALLER"
+echo "       ARTIX OPENRC + XLIBRE + QTILE INSTALLER"
 echo "============================================================"
 echo
 echo "THIS WILL COMPLETELY ERASE:"
 echo
 echo "    $DISK"
 echo
-echo "The following will be installed:"
+echo "Installation:"
 echo
 echo "    Artix Linux"
 echo "    OpenRC"
@@ -126,17 +134,25 @@ echo "    XFS"
 echo "    XLibre"
 echo "    Qtile"
 echo "    LightDM"
-echo "    AMD graphics stack"
-echo "    Steam / Proton support"
+echo "    AMD graphics"
+echo "    Steam / Proton"
 echo "    Arch extra"
 echo "    Arch multilib"
 echo "    PipeWire"
 echo "    Bluetooth"
 echo "    Flatpak"
 echo
-echo "Hostname:       $HOSTNAME"
-echo "Username:       $USERNAME"
-echo "Timezone:       $TIMEZONE"
+echo "User:"
+echo
+echo "    $USERNAME"
+echo
+echo "Root password:"
+echo
+echo "    NONE — root account will be locked"
+echo
+echo "Sudo:"
+echo
+echo "    PASSWORDLESS"
 echo
 echo "============================================================"
 echo
@@ -147,41 +163,38 @@ if [[ "$CONFIRM" != "ERASE" ]]; then
     die "Installation cancelled."
 fi
 
-# ------------------------------------------------------------
-# Passwords
-# ------------------------------------------------------------
-
-echo
-info "Set the password for root."
-read -rsp "Root password: " ROOT_PASSWORD
-echo
-read -rsp "Confirm root password: " ROOT_PASSWORD_CONFIRM
-echo
-
-if [[ "$ROOT_PASSWORD" != "$ROOT_PASSWORD_CONFIRM" ]]; then
-    die "Root passwords do not match."
-fi
+# ============================================================
+# USER PASSWORD
+# ============================================================
 
 echo
 info "Set the password for $USERNAME."
-read -rsp "User password: " USER_PASSWORD
+echo "This is the only password you need."
 echo
-read -rsp "Confirm user password: " USER_PASSWORD_CONFIRM
+
+read -rsp "Password: " USER_PASSWORD
+echo
+
+read -rsp "Confirm password: " USER_PASSWORD_CONFIRM
 echo
 
 if [[ "$USER_PASSWORD" != "$USER_PASSWORD_CONFIRM" ]]; then
-    die "User passwords do not match."
+    die "Passwords do not match."
 fi
 
-# ------------------------------------------------------------
-# Prepare disk
-# ------------------------------------------------------------
+# ============================================================
+# UNMOUNT ANY EXISTING INSTALLATION
+# ============================================================
 
-info "Unmounting anything currently mounted from $DISK..."
+info "Unmounting anything currently mounted under $MNT..."
 
 umount -R "$MNT" 2>/dev/null || true
 
-info "Wiping old filesystem signatures..."
+# ============================================================
+# DISK
+# ============================================================
+
+info "Wiping existing filesystem signatures..."
 
 wipefs -af "$DISK"
 
@@ -191,62 +204,104 @@ parted -s "$DISK" mklabel gpt
 
 info "Creating EFI partition..."
 
-parted -s "$DISK" mkpart ESP fat32 1MiB 1025MiB
-parted -s "$DISK" set 1 esp on
+parted -s "$DISK" \
+    mkpart ESP fat32 1MiB 1025MiB
+
+parted -s "$DISK" \
+    set 1 esp on
 
 info "Creating XFS root partition..."
 
-parted -s "$DISK" mkpart primary xfs 1025MiB 100%
+parted -s "$DISK" \
+    mkpart primary xfs 1025MiB 100%
 
-# Give udev a moment to settle
+# ------------------------------------------------------------
+# IMPORTANT:
+# Tell the kernel about the new partition table.
+# This helps prevent fsconfig()/mount errors when the
+# kernel has not yet noticed the newly created partitions.
+# ------------------------------------------------------------
+
+info "Refreshing kernel partition table..."
+
+partprobe "$DISK" || true
+
+udevadm settle
+
 sleep 2
 
-EFI="${DISK}p1"
-ROOT="${DISK}p2"
+# ============================================================
+# VERIFY PARTITIONS
+# ============================================================
 
-# ------------------------------------------------------------
-# Format
-# ------------------------------------------------------------
+info "Verifying partitions..."
+
+lsblk "$DISK"
+
+if [[ ! -b "$EFI" ]]; then
+    die "$EFI was not created."
+fi
+
+if [[ ! -b "$ROOT" ]]; then
+    die "$ROOT was not created."
+fi
+
+success "Partitions detected:"
+lsblk -o NAME,SIZE,TYPE,FSTYPE "$DISK"
+
+# ============================================================
+# FORMAT
+# ============================================================
 
 info "Formatting EFI partition..."
 
 mkfs.fat -F32 "$EFI"
 
-info "Formatting root partition as XFS..."
+info "Formatting XFS root partition..."
 
 mkfs.xfs -f "$ROOT"
 
-# ------------------------------------------------------------
-# Mount
-# ------------------------------------------------------------
+udevadm settle
+
+# ============================================================
+# MOUNT
+# ============================================================
 
 info "Mounting root filesystem..."
 
+mkdir -p "$MNT"
+
 mount "$ROOT" "$MNT"
+
+info "Mounting EFI filesystem..."
 
 mkdir -p "$MNT/boot/efi"
 
-info "Mounting EFI partition..."
-
 mount "$EFI" "$MNT/boot/efi"
 
-# ------------------------------------------------------------
-# Base installation
-# ------------------------------------------------------------
+success "Filesystems mounted."
+
+findmnt "$MNT"
+findmnt "$MNT/boot/efi"
+
+# ============================================================
+# BASESTRAP
+# ============================================================
 
 info "Installing Artix base system..."
 
 basestrap "$MNT" \
     base \
     base-devel \
+    openrc \
+    elogind-openrc \
     linux \
     linux-headers \
     linux-firmware \
-    openrc \
-    elogind-openrc \
+    amd-ucode \
     xfsprogs \
-    efibootmgr \
     grub \
+    efibootmgr \
     os-prober \
     nano \
     sudo \
@@ -256,47 +311,42 @@ basestrap "$MNT" \
     networkmanager \
     networkmanager-openrc
 
-# ------------------------------------------------------------
-# fstab
-# ------------------------------------------------------------
+# ============================================================
+# FSTAB
+# ============================================================
 
 info "Generating fstab..."
 
-fstabgen -U "$MNT" >> "$MNT/etc/fstab"
+fstabgen -U "$MNT" > "$MNT/etc/fstab"
 
-# ------------------------------------------------------------
-# Copy resolver configuration
-# ------------------------------------------------------------
+echo
+cat "$MNT/etc/fstab"
+echo
+
+# ============================================================
+# DNS
+# ============================================================
 
 if [[ -f /etc/resolv.conf ]]; then
     cp -L /etc/resolv.conf "$MNT/etc/resolv.conf"
 fi
 
-# ------------------------------------------------------------
-# Copy script into installed system
-# ------------------------------------------------------------
+# ============================================================
+# CHROOT CONFIGURATION SCRIPT
+# ============================================================
 
-cp "$0" "$MNT/root/artix-qtile-xlibre-install.sh"
+info "Preparing installed system configuration..."
 
-# ------------------------------------------------------------
-# Create chroot configuration script
-# ------------------------------------------------------------
-
-cat > "$MNT/root/artix-configure.sh" <<'CHROOT_SCRIPT'
+cat > "$MNT/root/configure-artix.sh" <<'CHROOT'
 #!/usr/bin/env bash
 
 set -Eeuo pipefail
 
-DISK="/dev/nvme0n1"
-EFI="${DISK}p1"
-ROOT="${DISK}p2"
-
+USERNAME="mike"
 HOSTNAME="artix"
 TIMEZONE="America/New_York"
 LOCALE="en_US.UTF-8"
-USERNAME="mike"
 
-ROOT_PASSWORD="__ROOT_PASSWORD__"
 USER_PASSWORD="__USER_PASSWORD__"
 
 info() {
@@ -304,38 +354,46 @@ info() {
     echo "==> $*"
 }
 
-# ------------------------------------------------------------
-# Timezone
-# ------------------------------------------------------------
+# ============================================================
+# TIMEZONE
+# ============================================================
 
 info "Configuring timezone..."
 
-ln -sf "/usr/share/zoneinfo/${TIMEZONE}" /etc/localtime
+ln -sf \
+    "/usr/share/zoneinfo/${TIMEZONE}" \
+    /etc/localtime
+
 hwclock --systohc
 
-# ------------------------------------------------------------
-# Locale
-# ------------------------------------------------------------
+# ============================================================
+# LOCALE
+# ============================================================
 
 info "Configuring locale..."
 
-sed -i "s/^#${LOCALE} UTF-8$/${LOCALE} UTF-8/" /etc/locale.gen
+sed -i \
+    "s/^#${LOCALE} UTF-8/${LOCALE} UTF-8/" \
+    /etc/locale.gen
 
-# In case the line isn't commented in the expected format
-grep -q "^${LOCALE} UTF-8" /etc/locale.gen || \
+if ! grep -q "^${LOCALE} UTF-8" /etc/locale.gen; then
     echo "${LOCALE} UTF-8" >> /etc/locale.gen
+fi
 
 locale-gen
 
-echo "LANG=${LOCALE}" > /etc/locale.conf
+cat > /etc/locale.conf <<EOF
+LANG=${LOCALE}
+LC_COLLATE=C
+EOF
 
-# ------------------------------------------------------------
-# Hostname
-# ------------------------------------------------------------
+# ============================================================
+# HOSTNAME
+# ============================================================
 
 info "Configuring hostname..."
 
-echo "${HOSTNAME}" > /etc/hostname
+echo "$HOSTNAME" > /etc/hostname
 
 cat > /etc/hosts <<EOF
 127.0.0.1   localhost
@@ -343,29 +401,34 @@ cat > /etc/hosts <<EOF
 127.0.1.1   ${HOSTNAME}.localdomain ${HOSTNAME}
 EOF
 
-# ------------------------------------------------------------
-# Root password
-# ------------------------------------------------------------
+# ============================================================
+# ROOT ACCOUNT
+#
+# NO ROOT PASSWORD.
+# Lock root completely.
+# ============================================================
 
-info "Setting root password..."
+info "Locking root account..."
 
-printf '%s\n' \
-    "root:${ROOT_PASSWORD}" | chpasswd
+passwd -l root
 
-# ------------------------------------------------------------
-# Pacman configuration
-# ------------------------------------------------------------
+# ============================================================
+# PACMAN
+# ============================================================
 
 info "Configuring pacman..."
 
 sed -i 's/^#Color$/Color/' /etc/pacman.conf
-sed -i 's/^#ParallelDownloads = 5$/ParallelDownloads = 5/' /etc/pacman.conf
 
-# ------------------------------------------------------------
-# XLibre repository key
-# ------------------------------------------------------------
+sed -i \
+    's/^#ParallelDownloads = 5/ParallelDownloads = 5/' \
+    /etc/pacman.conf
 
-info "Installing XLibre repository signing key..."
+# ============================================================
+# XLIBRE KEY
+# ============================================================
+
+info "Installing XLibre signing key..."
 
 curl -fsSL \
     https://xlibre-artix.github.io/xlibre-artixlinux.asc \
@@ -379,73 +442,87 @@ pacman-key --lsign-key 2AFFCD7B42ADD2E7
 
 rm -f /root/xlibre-artixlinux.asc
 
-# ------------------------------------------------------------
-# Insert XLibre repository
+# ============================================================
+# XLIBRE REPOSITORY
 #
-# It MUST be after [system] and before [world].
-# ------------------------------------------------------------
+# Must be:
+#
+# [system]
+# [xlibre-stable]
+# [world]
+# ============================================================
 
-info "Configuring XLibre repository..."
+info "Adding XLibre repository..."
 
 python - <<'PY'
 from pathlib import Path
 
-p = Path("/etc/pacman.conf")
-text = p.read_text()
+path = Path("/etc/pacman.conf")
+text = path.read_text()
 
-repo = """\
+if "[xlibre-stable]" not in text:
+
+    repo = """\
 [xlibre-stable]
 Server = https://github.com/xlibre-artix/stable/releases/download/$arch
 
 """
 
-if "[xlibre-stable]" not in text:
     marker = "[world]"
+
     if marker not in text:
-        raise SystemExit("Could not find [world] in pacman.conf")
+        raise SystemExit(
+            "Could not find [world] in /etc/pacman.conf"
+        )
 
-    text = text.replace(marker, repo + marker, 1)
+    text = text.replace(
+        marker,
+        repo + marker,
+        1
+    )
 
-p.write_text(text)
+path.write_text(text)
 PY
 
-# ------------------------------------------------------------
-# Update Artix
-# ------------------------------------------------------------
+# ============================================================
+# INITIAL SYSTEM UPDATE
+# ============================================================
 
-info "Synchronizing Artix repositories..."
+info "Updating Artix..."
 
 pacman -Syyu --noconfirm
 
-# ------------------------------------------------------------
-# Arch Linux repository support
-# ------------------------------------------------------------
+# ============================================================
+# ARCH LINUX SUPPORT
+# ============================================================
 
-info "Installing Artix Arch Linux repository support..."
+info "Installing Arch repository support..."
 
-pacman -S --noconfirm artix-archlinux-support
+pacman -S --noconfirm \
+    artix-archlinux-support
 
-# ------------------------------------------------------------
-# Add Arch extra + multilib
+# ============================================================
+# ARCH EXTRA + MULTILIB
 #
-# DO NOT ADD ARCH CORE.
-# ------------------------------------------------------------
+# NO ARCH CORE.
+# ============================================================
 
-info "Enabling Arch extra + multilib..."
+info "Enabling Arch extra and multilib..."
 
 python - <<'PY'
 from pathlib import Path
 
-p = Path("/etc/pacman.conf")
-text = p.read_text()
+path = Path("/etc/pacman.conf")
+text = path.read_text()
 
-arch_repos = """
+if "[extra]" not in text:
+
+    text += """
+
 # ============================================================
 # Arch Linux repositories
 #
-# IMPORTANT:
-# Do NOT enable [core].
-# Artix [system] provides the core system layer.
+# Arch core is intentionally NOT enabled.
 # ============================================================
 
 [extra]
@@ -455,50 +532,55 @@ Include = /etc/pacman.d/mirrorlist-arch
 Include = /etc/pacman.d/mirrorlist-arch
 """
 
-if "[extra]" not in text:
-    text += "\n" + arch_repos + "\n"
 elif "[multilib]" not in text:
-    text += "\n[multilib]\nInclude = /etc/pacman.d/mirrorlist-arch\n"
 
-p.write_text(text)
+    text += """
+
+[multilib]
+Include = /etc/pacman.d/mirrorlist-arch
+"""
+
+path.write_text(text)
 PY
 
-# ------------------------------------------------------------
-# Populate Arch keys
-# ------------------------------------------------------------
+# ============================================================
+# ARCH KEYRING
+# ============================================================
 
-info "Populating Arch Linux package signing keys..."
+info "Populating Arch Linux keys..."
 
 pacman-key --populate archlinux
 
-# ------------------------------------------------------------
-# Update all repositories
-# ------------------------------------------------------------
+# ============================================================
+# UPDATE WITH ARCH REPOS
+# ============================================================
 
-info "Performing full system update..."
+info "Updating with Arch extra/multilib enabled..."
 
 pacman -Syyu --noconfirm
 
-# ------------------------------------------------------------
-# User
-# ------------------------------------------------------------
+# ============================================================
+# USER
+# ============================================================
 
-info "Creating user ${USERNAME}..."
+info "Creating user $USERNAME..."
 
-if ! id "${USERNAME}" >/dev/null 2>&1; then
+if ! id "$USERNAME" >/dev/null 2>&1; then
+
     useradd \
         -m \
         -G wheel,audio,video,networkmanager \
         -s /bin/bash \
-        "${USERNAME}"
+        "$USERNAME"
+
 fi
 
 printf '%s\n' \
     "${USERNAME}:${USER_PASSWORD}" | chpasswd
 
-# ------------------------------------------------------------
-# Passwordless sudo
-# ------------------------------------------------------------
+# ============================================================
+# PASSWORDLESS SUDO
+# ============================================================
 
 info "Configuring passwordless sudo..."
 
@@ -510,31 +592,29 @@ chmod 440 /etc/sudoers.d/wheel-nopasswd
 
 visudo -c
 
-# ------------------------------------------------------------
-# OpenRC services
-# ------------------------------------------------------------
+# ============================================================
+# OPENRC
+# ============================================================
 
-info "Enabling OpenRC services..."
+info "Configuring OpenRC services..."
 
 rc-update add NetworkManager default || true
+
 rc-update add elogind boot || true
 
-# ------------------------------------------------------------
-# XLibre
-# ------------------------------------------------------------
+# ============================================================
+# XLIBRE
+# ============================================================
 
 info "Installing XLibre..."
 
-pacman -S --noconfirm xlibre-meta
+pacman -S --noconfirm \
+    xlibre-meta \
+    xlibre-video-amdgpu
 
-# AMD driver
-info "Installing AMD XLibre driver..."
-
-pacman -S --noconfirm xlibre-video-amdgpu
-
-# ------------------------------------------------------------
-# X11 utilities
-# ------------------------------------------------------------
+# ============================================================
+# X11 UTILITIES
+# ============================================================
 
 info "Installing X11 utilities..."
 
@@ -546,11 +626,11 @@ pacman -S --noconfirm \
     xorg-xmodmap \
     xorg-xdpyinfo
 
-# ------------------------------------------------------------
-# AMD graphics / Vulkan / 32-bit
-# ------------------------------------------------------------
+# ============================================================
+# AMD GRAPHICS
+# ============================================================
 
-info "Installing AMD graphics and Vulkan stack..."
+info "Installing AMD graphics stack..."
 
 pacman -S --noconfirm \
     mesa \
@@ -563,9 +643,9 @@ pacman -S --noconfirm \
     mesa-vdpau \
     mesa-utils
 
-# ------------------------------------------------------------
-# Qtile
-# ------------------------------------------------------------
+# ============================================================
+# QTILE
+# ============================================================
 
 info "Installing Qtile..."
 
@@ -574,9 +654,9 @@ pacman -S --noconfirm \
     python-psutil \
     alacritty
 
-# ------------------------------------------------------------
-# LightDM
-# ------------------------------------------------------------
+# ============================================================
+# LIGHTDM
+# ============================================================
 
 info "Installing LightDM..."
 
@@ -587,10 +667,6 @@ pacman -S --noconfirm \
 
 rc-update add lightdm default
 
-# ------------------------------------------------------------
-# LightDM configuration
-# ------------------------------------------------------------
-
 mkdir -p /etc/lightdm
 
 cat > /etc/lightdm/lightdm.conf <<'EOF'
@@ -598,11 +674,11 @@ cat > /etc/lightdm/lightdm.conf <<'EOF'
 greeter-session=lightdm-gtk-greeter
 EOF
 
-# ------------------------------------------------------------
-# Qtile session
-# ------------------------------------------------------------
+# ============================================================
+# QTILE SESSION
+# ============================================================
 
-info "Creating Qtile desktop session..."
+info "Creating Qtile session..."
 
 mkdir -p /usr/share/xsessions
 
@@ -615,9 +691,9 @@ Type=Application
 Keywords=wm;tiling
 EOF
 
-# ------------------------------------------------------------
-# Desktop utilities
-# ------------------------------------------------------------
+# ============================================================
+# DESKTOP UTILITIES
+# ============================================================
 
 info "Installing desktop utilities..."
 
@@ -640,9 +716,9 @@ pacman -S --noconfirm \
     gvfs-mtp \
     file-roller
 
-# ------------------------------------------------------------
-# Fonts
-# ------------------------------------------------------------
+# ============================================================
+# FONTS
+# ============================================================
 
 info "Installing fonts..."
 
@@ -651,9 +727,9 @@ pacman -S --noconfirm \
     noto-fonts \
     noto-fonts-emoji
 
-# ------------------------------------------------------------
-# PipeWire
-# ------------------------------------------------------------
+# ============================================================
+# PIPEWIRE
+# ============================================================
 
 info "Installing PipeWire..."
 
@@ -664,15 +740,18 @@ pacman -S --noconfirm \
     wireplumber \
     rtkit
 
-# OpenRC integration if available
 if pacman -Si pipewire-openrc >/dev/null 2>&1; then
-    pacman -S --noconfirm pipewire-openrc
+
+    pacman -S --noconfirm \
+        pipewire-openrc
+
     rc-update add pipewire default || true
+
 fi
 
-# ------------------------------------------------------------
-# Bluetooth
-# ------------------------------------------------------------
+# ============================================================
+# BLUETOOTH
+# ============================================================
 
 info "Installing Bluetooth..."
 
@@ -682,31 +761,35 @@ pacman -S --noconfirm \
     blueman
 
 if pacman -Si bluez-openrc >/dev/null 2>&1; then
-    pacman -S --noconfirm bluez-openrc
+
+    pacman -S --noconfirm \
+        bluez-openrc
+
     rc-update add bluetooth default || true
+
 fi
 
-# ------------------------------------------------------------
-# Flatpak
-# ------------------------------------------------------------
+# ============================================================
+# FLATPAK
+# ============================================================
 
 info "Installing Flatpak..."
 
 pacman -S --noconfirm flatpak
 
-# ------------------------------------------------------------
-# Steam
-# ------------------------------------------------------------
+# ============================================================
+# STEAM
+# ============================================================
 
 info "Installing Steam..."
 
 pacman -S --noconfirm steam
 
-# ------------------------------------------------------------
-# General utilities
-# ------------------------------------------------------------
+# ============================================================
+# BASIC UTILITIES
+# ============================================================
 
-info "Installing general utilities..."
+info "Installing basic utilities..."
 
 pacman -S --noconfirm \
     git \
@@ -721,9 +804,9 @@ pacman -S --noconfirm \
     rsync \
     openssh
 
-# ------------------------------------------------------------
-# Development / ZarisWM tools
-# ------------------------------------------------------------
+# ============================================================
+# ZARISWM / X11 DEVELOPMENT
+# ============================================================
 
 info "Installing X11 development libraries..."
 
@@ -742,17 +825,17 @@ pacman -S --noconfirm \
     libxcomposite \
     libxcb
 
-# ------------------------------------------------------------
-# Firefox
-# ------------------------------------------------------------
+# ============================================================
+# FIREFOX
+# ============================================================
 
 info "Installing Firefox..."
 
 pacman -S --noconfirm firefox
 
-# ------------------------------------------------------------
-# Flatpak Flathub
-# ------------------------------------------------------------
+# ============================================================
+# FLATHUB
+# ============================================================
 
 info "Adding Flathub..."
 
@@ -761,9 +844,9 @@ flatpak remote-add \
     flathub \
     https://dl.flathub.org/repo/flathub.flatpakrepo
 
-# ------------------------------------------------------------
+# ============================================================
 # GRUB
-# ------------------------------------------------------------
+# ============================================================
 
 info "Installing GRUB..."
 
@@ -773,169 +856,169 @@ grub-install \
     --bootloader-id=Artix \
     --recheck
 
-grub-mkconfig -o /boot/grub/grub.cfg
+grub-mkconfig \
+    -o /boot/grub/grub.cfg
 
-# ------------------------------------------------------------
-# Initramfs
-# ------------------------------------------------------------
+# ============================================================
+# INITRAMFS
+# ============================================================
 
 info "Rebuilding initramfs..."
 
 mkinitcpio -P
 
-# ------------------------------------------------------------
-# Final package update
-# ------------------------------------------------------------
+# ============================================================
+# FINAL UPDATE
+# ============================================================
 
 info "Performing final system update..."
 
 pacman -Syu --noconfirm
 
-# ------------------------------------------------------------
-# Verification
-# ------------------------------------------------------------
-
-info "Performing installation checks..."
+# ============================================================
+# VERIFY
+# ============================================================
 
 echo
 echo "============================================================"
-echo "Repository check"
+echo "                    INSTALLATION CHECK"
 echo "============================================================"
+echo
+
+echo "--- Repositories ---"
 
 pacman -Sl extra | head -n 5 || true
 pacman -Sl multilib | head -n 5 || true
 
 echo
-echo "============================================================"
-echo "XLibre"
-echo "============================================================"
+echo "--- XLibre ---"
 
 pacman -Q | grep xlibre || true
 
 echo
-echo "============================================================"
-echo "Qtile"
-echo "============================================================"
+echo "--- Qtile ---"
 
 qtile --version || true
 
 echo
-echo "============================================================"
-echo "LightDM"
-echo "============================================================"
+echo "--- LightDM ---"
 
-pacman -Q lightdm lightdm-gtk-greeter lightdm-openrc || true
+pacman -Q \
+    lightdm \
+    lightdm-gtk-greeter \
+    lightdm-openrc || true
 
 echo
-echo "============================================================"
-echo "OpenRC services"
-echo "============================================================"
+echo "--- OpenRC ---"
 
 rc-update show
 
 echo
 echo "============================================================"
-echo "Installation complete"
+echo "                  INSTALLATION COMPLETE"
 echo "============================================================"
 echo
-echo "User:              ${USERNAME}"
-echo "Hostname:          ${HOSTNAME}"
-echo "Timezone:          ${TIMEZONE}"
+echo "User:              $USERNAME"
+echo "Hostname:          $HOSTNAME"
 echo "Desktop:           Qtile"
-echo "Display manager:   LightDM"
-echo "Display server:    XLibre"
+echo "Display Manager:   LightDM"
+echo "Display Server:    XLibre"
 echo "Init:              OpenRC"
 echo
 echo "Arch repositories:"
 echo "    extra"
 echo "    multilib"
 echo
-echo "Passwordless sudo: ENABLED"
+echo "Arch core:"
+echo "    NOT ENABLED"
 echo
-echo "============================================================"
+echo "Root account:"
+echo "    LOCKED"
 echo
-echo "After reboot:"
-echo
-echo "  1. Log into LightDM."
-echo "  2. Select Qtile if necessary."
-echo "  3. Log in."
-echo "  4. Test:"
-echo
-echo "       echo \$XDG_SESSION_TYPE"
-echo "       xdpyinfo | grep vendor"
-echo "       glxinfo | grep 'OpenGL renderer'"
-echo
-echo "Expected:"
-echo "       x11"
-echo "       XLibre vendor information"
-echo "       AMD Radeon RX 7900 XT / radeonsi"
+echo "Sudo:"
+echo "    PASSWORDLESS"
 echo
 echo "============================================================"
 
-CHROOT_SCRIPT
+CHROOT
 
-# Replace password placeholders safely
-python - "$MNT/root/artix-configure.sh" "$ROOT_PASSWORD" "$USER_PASSWORD" <<'PY'
+# ============================================================
+# INSERT USER PASSWORD SAFELY
+# ============================================================
+
+python - "$MNT/root/configure-artix.sh" "$USER_PASSWORD" <<'PY'
 from pathlib import Path
 import sys
 
 path = Path(sys.argv[1])
-root_password = sys.argv[2]
-user_password = sys.argv[3]
+password = sys.argv[2]
+
+# Safely encode a shell single-quoted string.
+safe = "'" + password.replace("'", "'\"'\"'") + "'"
 
 text = path.read_text()
 
-# Shell-safe single-quoted representation
-def sq(s):
-    return "'" + s.replace("'", "'\"'\"'") + "'"
-
-text = text.replace(
-    'ROOT_PASSWORD="__ROOT_PASSWORD__"',
-    f'ROOT_PASSWORD={sq(root_password)}'
-)
-
 text = text.replace(
     'USER_PASSWORD="__USER_PASSWORD__"',
-    f'USER_PASSWORD={sq(user_password)}'
+    f'USER_PASSWORD={safe}'
 )
 
 path.write_text(text)
 PY
 
-chmod +x "$MNT/root/artix-configure.sh"
+chmod 700 "$MNT/root/configure-artix.sh"
 
-# ------------------------------------------------------------
-# Chroot
-# ------------------------------------------------------------
+# ============================================================
+# CHROOT
+# ============================================================
 
-info "Entering installed system..."
+info "Entering installed Artix system..."
 
-artix-chroot "$MNT" /root/artix-configure.sh
+artix-chroot "$MNT" /root/configure-artix.sh
 
-# ------------------------------------------------------------
-# Clean up
-# ------------------------------------------------------------
+# ============================================================
+# REMOVE TEMPORARY CONFIGURATION
+# ============================================================
 
-rm -f "$MNT/root/artix-configure.sh"
-rm -f "$MNT/root/artix-qtile-xlibre-install.sh"
+rm -f "$MNT/root/configure-artix.sh"
 
-# ------------------------------------------------------------
-# Unmount
-# ------------------------------------------------------------
-
-info "Unmounting filesystems..."
+# ============================================================
+# FINAL SYNC
+# ============================================================
 
 sync
+
+# ============================================================
+# UNMOUNT
+# ============================================================
+
+info "Unmounting installed system..."
 
 umount -R "$MNT"
 
 success "Installation completed successfully."
 
 echo
-echo "You can now reboot."
+echo "============================================================"
 echo
-read -rp "Reboot now? [Y/n]: " REBOOT
-
-if [[ ! "$REBOOT" =~ ^[Nn]$ ]]; then
-    reboot
-fi
+echo "Reboot when ready."
+echo
+echo "After reboot:"
+echo
+echo "  1. LightDM should appear."
+echo "  2. Select Qtile."
+echo "  3. Log in as mike."
+echo
+echo "Then test:"
+echo
+echo "    echo \$XDG_SESSION_TYPE"
+echo "    xdpyinfo | grep vendor"
+echo "    glxinfo | grep 'OpenGL renderer'"
+echo
+echo "Expected:"
+echo
+echo "    x11"
+echo "    XLibre vendor information"
+echo "    AMD Radeon / radeonsi"
+echo
+echo "============================================================"
