@@ -4,7 +4,7 @@
 # ARTIX LINUX INSTALLER
 # OpenRC + Btrfs + XLibre + Qtile + LightDM
 #
-# Target disk: /dev/nvme0n1
+# Target: /dev/nvme0n1
 # Boot: UEFI / GPT
 # Filesystem: Btrfs
 # Init: OpenRC
@@ -78,7 +78,7 @@ echo "============================================================"
 echo
 
 # ============================================================
-# NETWORK TEST
+# NETWORK
 # ============================================================
 
 echo "==> Testing Ethernet/network connectivity..."
@@ -87,32 +87,26 @@ if ! ping -c 1 -W 3 artixlinux.org >/dev/null 2>&1; then
     echo
     echo "ERROR: Network connectivity test failed."
     echo
-    echo "Make sure Ethernet is connected and try again."
+    echo "Make sure Ethernet is connected."
     exit 1
 fi
 
 echo "Network: OK"
 
 # ============================================================
-# INSTALL LIVE-ENVIRONMENT DEPENDENCIES
+# LIVE ENVIRONMENT DEPENDENCIES
 # ============================================================
 
 echo
 echo "============================================================"
-echo "Installing live-environment tools"
+echo "Installing live-environment dependencies"
 echo "============================================================"
 echo
 
-echo "==> Synchronizing package databases..."
-
 pacman -Sy --noconfirm
-
-echo
-echo "==> Installing required live-environment tools..."
 
 pacman -S --needed --noconfirm \
     util-linux \
-    parted \
     dosfstools \
     btrfs-progs \
     arch-install-scripts
@@ -122,7 +116,6 @@ echo "==> Checking required commands..."
 
 REQUIRED_COMMANDS="
 sfdisk
-partprobe
 wipefs
 blkid
 mkfs.fat
@@ -135,7 +128,9 @@ artix-chroot
 
 for CMD in $REQUIRED_COMMANDS; do
     if ! command -v "$CMD" >/dev/null 2>&1; then
+        echo
         echo "ERROR: Required command not found: $CMD"
+        echo
         exit 1
     fi
 done
@@ -149,7 +144,7 @@ echo "All required live-environment commands are available."
 
 echo
 echo "============================================================"
-echo "                 FINAL WARNING"
+echo "                    FINAL WARNING"
 echo "============================================================"
 echo
 echo "The following disk will be DESTROYED:"
@@ -167,11 +162,11 @@ if [ "$CONFIRM" != "ERASE" ]; then
 fi
 
 # ============================================================
-# UNMOUNT EXISTING MOUNTS
+# UNMOUNT
 # ============================================================
 
 echo
-echo "==> Unmounting existing mounts..."
+echo "==> Unmounting existing /mnt mounts..."
 
 umount -R "$MNT" 2>/dev/null || true
 
@@ -188,11 +183,14 @@ echo
 wipefs -af "$DISK"
 
 # ============================================================
-# CREATE GPT PARTITION TABLE
+# PARTITION DISK
 # ============================================================
 
 echo
-echo "==> Creating GPT partition table..."
+echo "============================================================"
+echo "Creating GPT partition table"
+echo "============================================================"
+echo
 
 sfdisk "$DISK" <<EOF
 label: gpt
@@ -203,15 +201,9 @@ start=1025, type=83
 EOF
 
 echo
-echo "==> Informing kernel about new partition table..."
+echo "==> Waiting for the kernel to recognize the new partitions..."
 
-partprobe "$DISK"
-
-sleep 3
-
-# ============================================================
-# VERIFY PARTITIONS
-# ============================================================
+sleep 5
 
 echo
 echo "==> Verifying partitions..."
@@ -221,17 +213,22 @@ lsblk "$DISK"
 if [ ! -b "$EFI" ]; then
     echo
     echo "ERROR: EFI partition was not created."
+    echo
+    echo "The disk has NOT been formatted beyond the partition-table"
+    echo "operation. Stop here and report the output above."
     exit 1
 fi
 
 if [ ! -b "$ROOT" ]; then
     echo
     echo "ERROR: Root partition was not created."
+    echo
+    echo "Stop here and report the output above."
     exit 1
 fi
 
 echo
-echo "Partitions created successfully."
+echo "Partitions successfully detected."
 
 # ============================================================
 # FORMAT EFI
@@ -256,22 +253,33 @@ mkfs.btrfs -f "$ROOT"
 # ============================================================
 
 echo
-echo "==> Mounting temporary Btrfs filesystem..."
+echo "============================================================"
+echo "Creating Btrfs subvolumes"
+echo "============================================================"
+echo
 
 mkdir -p "$MNT"
 
 mount "$ROOT" "$MNT"
 
-echo
-echo "==> Creating Btrfs subvolumes..."
+echo "==> Creating @..."
 
 btrfs subvolume create "$MNT/@"
+
+echo "==> Creating @home..."
+
 btrfs subvolume create "$MNT/@home"
+
+echo "==> Creating @log..."
+
 btrfs subvolume create "$MNT/@log"
+
+echo "==> Creating @cache..."
+
 btrfs subvolume create "$MNT/@cache"
 
 echo
-echo "==> Created subvolumes:"
+echo "==> Btrfs subvolumes:"
 
 btrfs subvolume list "$MNT"
 
@@ -282,7 +290,10 @@ umount "$MNT"
 # ============================================================
 
 echo
-echo "==> Mounting final Btrfs filesystem..."
+echo "============================================================"
+echo "Mounting installed filesystem"
+echo "============================================================"
+echo
 
 mount \
     -o subvol=@,compress=zstd,noatime \
@@ -312,7 +323,7 @@ mount \
 mount "$EFI" "$MNT/boot/efi"
 
 echo
-echo "==> Filesystems mounted:"
+echo "==> Filesystems mounted."
 
 findmnt "$MNT"
 findmnt "$MNT/home"
@@ -381,17 +392,17 @@ UUID=$EFI_UUID /boot/efi vfat umask=0077 0 2
 EOF
 
 echo
-echo "==> fstab:"
+echo "==> Generated fstab:"
 echo
 
 cat "$MNT/etc/fstab"
 
 # ============================================================
-# CHROOT SCRIPT
+# CREATE CHROOT SCRIPT
 # ============================================================
 
 echo
-echo "==> Creating installed-system configuration script..."
+echo "==> Creating installed-system setup script..."
 
 cat > "$MNT/root/artix-setup.sh" <<'CHROOT'
 #!/bin/bash
@@ -464,7 +475,7 @@ echo
 pacman -S --needed --noconfirm artix-archlinux-support
 
 echo
-echo "==> Adding Arch Linux repositories..."
+echo "==> Adding Arch extra repository..."
 
 cat >> /etc/pacman.conf <<EOF
 
@@ -490,12 +501,12 @@ echo "==> Synchronizing repositories..."
 pacman -Syy
 
 echo
-echo "==> Updating system..."
+echo "==> Updating complete system..."
 
 pacman -Syu --noconfirm
 
 # ============================================================
-# XLIBRE REPOSITORY
+# XLIBRE
 # ============================================================
 
 echo
@@ -506,24 +517,27 @@ echo
 
 pacman -S --needed --noconfirm curl
 
+echo
 echo "==> Downloading XLibre signing key..."
 
 curl -fsSL \
     https://xlibre-artix.github.io/xlibre-artixlinux.asc \
     -o /tmp/xlibre-artixlinux.asc
 
+echo
 echo "==> Adding XLibre signing key..."
 
 pacman-key --add /tmp/xlibre-artixlinux.asc
 
-echo "==> Locally signing XLibre key..."
+echo
+echo "==> Signing XLibre key..."
 
 pacman-key --lsign-key 2AFFCD7B42ADD2E7
 
 rm -f /tmp/xlibre-artixlinux.asc
 
 echo
-echo "==> Adding XLibre repository..."
+echo "==> Adding XLibre stable repository..."
 
 if ! grep -q "^\[xlibre-stable\]" /etc/pacman.conf; then
 
@@ -564,7 +578,7 @@ passwd "$USERNAME"
 # ============================================================
 
 echo
-echo "==> Configuring sudo..."
+echo "==> Configuring password-protected sudo..."
 
 if ! grep -q "^%wheel ALL=(ALL:ALL) ALL$" /etc/sudoers; then
 
@@ -579,12 +593,12 @@ fi
 chmod 440 /etc/sudoers
 
 # ============================================================
-# DESKTOP
+# DESKTOP PACKAGES
 # ============================================================
 
 echo
 echo "============================================================"
-echo "Installing desktop environment components"
+echo "Installing desktop packages"
 echo "============================================================"
 echo
 
@@ -620,7 +634,7 @@ pacman -S --needed --noconfirm \
     xorg-xdpyinfo
 
 # ============================================================
-# XLIBRE
+# XLIBRE PACKAGES
 # ============================================================
 
 echo
@@ -679,7 +693,7 @@ pacman -S --needed --noconfirm \
 # ============================================================
 
 echo
-echo "==> Installing Flatpak and portals..."
+echo "==> Installing Flatpak and XDG portals..."
 
 pacman -S --needed --noconfirm \
     flatpak \
@@ -694,7 +708,7 @@ flatpak remote-add --if-not-exists \
     https://flathub.org/repo/flathub.flatpakrepo
 
 # ============================================================
-# FORCE GTK PORTAL FOR QTILE
+# XDG PORTAL CONFIGURATION
 # ============================================================
 
 echo
@@ -758,7 +772,7 @@ EOF
 # ============================================================
 
 echo
-echo "==> Creating Qtile desktop session..."
+echo "==> Creating Qtile X11 session..."
 
 mkdir -p /usr/share/xsessions
 
@@ -912,8 +926,11 @@ echo "==> User:"
 id "$USERNAME"
 
 echo
-echo "==> Mounted filesystems:"
+echo "==> Filesystems:"
 findmnt -t btrfs
+
+echo
+echo "==> EFI:"
 findmnt /boot/efi
 
 echo
@@ -929,12 +946,12 @@ echo "==> Arch repositories:"
 grep -A2 -E "^\[(extra|multilib)\]" /etc/pacman.conf || true
 
 echo
-echo "==> Enabled services:"
+echo "==> Enabled OpenRC services:"
 rc-update show
 
 echo
 echo "============================================================"
-echo "        INSTALLED ARTIX CONFIGURATION COMPLETE"
+echo "       INSTALLED ARTIX CONFIGURATION COMPLETE"
 echo "============================================================"
 echo
 
@@ -966,7 +983,7 @@ echo "==> Syncing filesystem..."
 sync
 
 echo
-echo "==> Removing temporary installation files..."
+echo "==> Removing temporary setup script..."
 
 rm -f "$MNT/root/artix-setup.sh"
 
@@ -978,7 +995,7 @@ umount -R "$MNT"
 sync
 
 # ============================================================
-# DONE
+# COMPLETE
 # ============================================================
 
 echo
@@ -991,9 +1008,10 @@ echo "User:     $USERNAME"
 echo
 echo "Installed:"
 echo
+echo "  UEFI / GPT"
 echo "  Btrfs"
 echo "  OpenRC"
-echo "  GRUB / UEFI"
+echo "  GRUB"
 echo "  NetworkManager"
 echo "  elogind"
 echo "  XLibre"
@@ -1008,7 +1026,7 @@ echo "  Arch extra"
 echo "  Arch multilib"
 echo "  ZarisWM development tools"
 echo
-echo "The root password was not configured."
+echo "Root password was NOT configured."
 echo "sudo requires Mike's password."
 echo
 echo "Remove the Artix USB before rebooting."
