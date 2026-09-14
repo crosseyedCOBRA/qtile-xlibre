@@ -1,390 +1,399 @@
-#!/usr/bin/env bash
-#
-# Artix Linux + OpenRC + XLibre + Qtile
-# UEFI / GPT / XFS
+#!/bin/bash
+
+set -euo pipefail
+
+# ============================================================
+# Artix Linux OpenRC + Btrfs + XLibre + Qtile Installer
 #
 # Target:
 #   /dev/nvme0n1
 #
+# Filesystem:
+#   Btrfs
+#
+# Init:
+#   OpenRC
+#
+# Desktop:
+#   XLibre + Qtile + LightDM GTK
+#
+# Hardware:
+#   AMD RX 7900 XT
+#
+# Network:
+#   Ethernet
+#
 # User:
 #   mike
 #
-# Features:
-#   - Artix OpenRC
-#   - XLibre stable
-#   - Qtile
-#   - LightDM
-#   - NetworkManager
-#   - PipeWire
-#   - Bluetooth
-#   - AMD RX 7900 XT support
-#   - Arch extra + multilib
-#   - Steam
-#   - Flatpak + Flathub
-#   - passwordless sudo for wheel
-#   - root account locked; no root password
-#
 # WARNING:
-#   THIS WILL ERASE /dev/nvme0n1
-#
-
-set -Eeuo pipefail
-
-#######################################
-# Variables
-#######################################
+#   THIS SCRIPT ERASES /dev/nvme0n1
+# ============================================================
 
 DISK="/dev/nvme0n1"
-EFI_PART="${DISK}p1"
-ROOT_PART="${DISK}p2"
-
-USERNAME="mike"
 HOSTNAME="artix"
+USERNAME="mike"
 TIMEZONE="America/New_York"
 LOCALE="en_US.UTF-8"
 
-MOUNTPOINT="/mnt"
+MNT="/mnt"
+CHROOT_SCRIPT="/root/artix-chroot-install.sh"
 
-#######################################
+# ------------------------------------------------------------
 # Colors / helpers
-#######################################
+# ------------------------------------------------------------
 
-RED='\033[1;31m'
-GREEN='\033[1;32m'
+RED='\033[0;31m'
+GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-CYAN='\033[1;36m'
+CYAN='\033[0;36m'
 NC='\033[0m'
 
-msg() {
-    echo -e "${CYAN}==>${NC} $*"
+info() {
+    echo -e "${CYAN}==> $1${NC}"
 }
 
 success() {
-    echo -e "${GREEN}==>${NC} $*"
+    echo -e "${GREEN}==> $1${NC}"
 }
 
 warn() {
-    echo -e "${YELLOW}WARNING:${NC} $*"
+    echo -e "${YELLOW}WARNING: $1${NC}"
+}
+
+error() {
+    echo -e "${RED}ERROR: $1${NC}" >&2
 }
 
 die() {
-    echo -e "${RED}ERROR:${NC} $*" >&2
+    error "$1"
     exit 1
 }
 
-#######################################
-# Root check
-#######################################
+# ------------------------------------------------------------
+# Root / environment checks
+# ------------------------------------------------------------
 
-if [[ "${EUID}" -ne 0 ]]; then
+if [[ "$EUID" -ne 0 ]]; then
     die "Run this script as root."
 fi
 
-#######################################
-# UEFI check
-#######################################
-
 if [[ ! -d /sys/firmware/efi ]]; then
-    die "The live environment was not booted in UEFI mode."
+    die "System was not booted in UEFI mode."
 fi
-
-#######################################
-# Disk check
-#######################################
 
 if [[ ! -b "$DISK" ]]; then
     die "$DISK does not exist."
 fi
 
-msg "Target disk:"
-lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS "$DISK"
+if ! ping -c 1 -W 3 artixlinux.org >/dev/null 2>&1; then
+    die "Network connectivity test failed. Connect Ethernet and try again."
+fi
 
 echo
-warn "THIS SCRIPT WILL COMPLETELY ERASE:"
+echo "============================================================"
+echo "        ARTIX LINUX INSTALLER"
+echo "============================================================"
+echo
+echo "THIS WILL COMPLETELY ERASE:"
+echo
 echo "    $DISK"
 echo
+echo "The target configuration is:"
+echo
+echo "    UEFI / GPT"
+echo "    EFI       1 GiB"
+echo "    Btrfs     remaining space"
+echo "    OpenRC"
+echo "    XLibre"
+echo "    Qtile"
+echo "    LightDM"
+echo "    AMD RX 7900 XT"
+echo
+echo "User:"
+echo "    $USERNAME"
+echo
+echo "Hostname:"
+echo "    $HOSTNAME"
+echo
+echo "Timezone:"
+echo "    $TIMEZONE"
+echo
+echo "============================================================"
+echo
+
 read -r -p "Type ERASE to continue: " CONFIRM
 
 if [[ "$CONFIRM" != "ERASE" ]]; then
     die "Installation cancelled."
 fi
 
-#######################################
-# Password
-#######################################
+# ------------------------------------------------------------
+# Make sure nothing is mounted under /mnt
+# ------------------------------------------------------------
 
-echo
-msg "Create the password for user '$USERNAME'."
-echo "This will be the ONLY password requested."
-echo
-echo "The root account will be LOCKED."
-echo "The '$USERNAME' account will have passwordless sudo."
-echo
+info "Unmounting anything currently mounted under /mnt..."
 
-read -r -s -p "Password for $USERNAME: " USER_PASSWORD
-echo
-read -r -s -p "Confirm password: " USER_PASSWORD_CONFIRM
-echo
+umount -R "$MNT" 2>/dev/null || true
 
-if [[ "$USER_PASSWORD" != "$USER_PASSWORD_CONFIRM" ]]; then
-    die "Passwords do not match."
-fi
+# ------------------------------------------------------------
+# Partition disk
+# ------------------------------------------------------------
 
-if [[ -z "$USER_PASSWORD" ]]; then
-    die "Password cannot be empty."
-fi
-
-unset USER_PASSWORD_CONFIRM
-
-#######################################
-# Live ISO dependencies
-#######################################
-
-msg "Installing live-ISO tools..."
-
-pacman -Syu --needed --noconfirm \
-    parted \
-    dosfstools \
-    xfsprogs \
-    gptfdisk \
-    util-linux \
-    curl \
-    wget
-
-#######################################
-# Verify required Artix tools
-#######################################
-
-command -v basestrap >/dev/null 2>&1 \
-    || die "basestrap is not available."
-
-command -v fstabgen >/dev/null 2>&1 \
-    || die "fstabgen is not available."
-
-command -v artix-chroot >/dev/null 2>&1 \
-    || die "artix-chroot is not available."
-
-#######################################
-# Unmount anything currently mounted
-#######################################
-
-msg "Unmounting anything currently mounted from target disk..."
-
-umount -R "$MOUNTPOINT" 2>/dev/null || true
-
-#######################################
-# Wipe disk
-#######################################
-
-msg "Wiping partition table..."
+info "Wiping existing filesystem signatures..."
 
 wipefs -af "$DISK"
-sgdisk --zap-all "$DISK"
 
-#######################################
-# Create GPT partition table
-#######################################
+info "Creating GPT partition table..."
 
-msg "Creating GPT partition table..."
+sfdisk "$DISK" <<'EOF'
+label: gpt
+unit: MiB
 
-parted -s "$DISK" mklabel gpt
+start=1, size=1024, type=U
+start=1025, type=83
+EOF
 
-parted -s "$DISK" mkpart ESP fat32 1MiB 1025MiB
-parted -s "$DISK" set 1 esp on
+partprobe "$DISK"
+sleep 2
 
-parted -s "$DISK" mkpart primary xfs 1025MiB 100%
+EFI="${DISK}p1"
+ROOT="${DISK}p2"
 
-#######################################
-# Make kernel reread partition table
-#######################################
-
-msg "Refreshing partition table..."
-
-partprobe "$DISK" || true
-udevadm settle || true
-sleep 3
-
-#######################################
-# Verify partitions
-#######################################
-
-msg "Checking for created partitions..."
-
-if [[ ! -b "$EFI_PART" ]]; then
-    lsblk "$DISK"
-    die "$EFI_PART was not created."
+if [[ ! -b "$EFI" || ! -b "$ROOT" ]]; then
+    die "Partition devices were not created correctly."
 fi
 
-if [[ ! -b "$ROOT_PART" ]]; then
-    lsblk "$DISK"
-    die "$ROOT_PART was not created."
-fi
-
-success "Partitions detected."
-
-lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS "$DISK"
-
-#######################################
+# ------------------------------------------------------------
 # Format
-#######################################
+# ------------------------------------------------------------
 
-msg "Formatting EFI partition..."
+info "Formatting EFI partition..."
 
-mkfs.fat -F32 "$EFI_PART"
+mkfs.fat -F32 "$EFI"
 
-msg "Formatting root partition as XFS..."
+info "Formatting Btrfs root partition..."
 
-mkfs.xfs -f "$ROOT_PART"
+mkfs.btrfs -f "$ROOT"
 
-#######################################
-# Mount
-#######################################
+# ------------------------------------------------------------
+# Create Btrfs subvolumes
+# ------------------------------------------------------------
 
-msg "Mounting root filesystem..."
+info "Creating Btrfs subvolumes..."
 
-mount "$ROOT_PART" "$MOUNTPOINT"
+mount "$ROOT" "$MNT"
 
-mkdir -p "$MOUNTPOINT/boot/efi"
+btrfs subvolume create "$MNT/@"
+btrfs subvolume create "$MNT/@home"
+btrfs subvolume create "$MNT/@log"
+btrfs subvolume create "$MNT/@cache"
 
-msg "Mounting EFI filesystem..."
+umount "$MNT"
 
-mount "$EFI_PART" "$MOUNTPOINT/boot/efi"
+# ------------------------------------------------------------
+# Mount Btrfs subvolumes
+# ------------------------------------------------------------
 
-#######################################
-# Verify mounts
-#######################################
+info "Mounting Btrfs subvolumes..."
 
-msg "Verifying mounts..."
+mount -o subvol=@,compress=zstd,noatime "$ROOT" "$MNT"
 
-findmnt "$MOUNTPOINT"
-findmnt "$MOUNTPOINT/boot/efi"
+mkdir -p \
+    "$MNT/home" \
+    "$MNT/var/log" \
+    "$MNT/var/cache" \
+    "$MNT/boot/efi"
 
-#######################################
-# Base installation
-#######################################
+mount -o subvol=@home,compress=zstd,noatime "$ROOT" "$MNT/home"
+mount -o subvol=@log,compress=zstd,noatime "$ROOT" "$MNT/var/log"
+mount -o subvol=@cache,compress=zstd,noatime "$ROOT" "$MNT/var/cache"
 
-msg "Installing Artix base system..."
+mount "$EFI" "$MNT/boot/efi"
 
-basestrap "$MOUNTPOINT" \
+info "Current mounts:"
+
+mount | grep "$MNT" || true
+
+# ------------------------------------------------------------
+# DNS for chroot
+# ------------------------------------------------------------
+
+info "Preparing DNS for the new system..."
+
+rm -f "$MNT/etc/resolv.conf"
+cp -L /etc/resolv.conf "$MNT/etc/resolv.conf"
+
+# ------------------------------------------------------------
+# Install base system
+# ------------------------------------------------------------
+
+info "Installing Artix base system..."
+
+basestrap "$MNT" \
     base \
     base-devel \
     linux \
-    linux-headers \
     linux-firmware \
+    amd-ucode \
     openrc \
+    elogind \
     elogind-openrc \
-    xfsprogs \
+    btrfs-progs \
     efibootmgr \
     grub \
-    os-prober \
     nano \
-    sudo \
-    git \
+    vim \
     curl \
     wget \
+    git \
+    sudo \
     networkmanager \
     networkmanager-openrc
 
-#######################################
-# Generate fstab
-#######################################
+# ------------------------------------------------------------
+# Create fstab manually
+# ------------------------------------------------------------
 
-msg "Generating fstab..."
+info "Creating fstab..."
 
-fstabgen -U "$MOUNTPOINT" >> "$MOUNTPOINT/etc/fstab"
+ROOT_UUID="$(blkid -s UUID -o value "$ROOT")"
+EFI_UUID="$(blkid -s UUID -o value "$EFI")"
 
-#######################################
-# Resolver
-#######################################
+cat > "$MNT/etc/fstab" <<EOF
+# Btrfs root
+UUID=$ROOT_UUID  /          btrfs  subvol=@,compress=zstd,noatime  0 0
 
-if [[ -e /etc/resolv.conf ]]; then
-    cp -L /etc/resolv.conf "$MOUNTPOINT/etc/resolv.conf"
-fi
+# Btrfs home
+UUID=$ROOT_UUID  /home      btrfs  subvol=@home,compress=zstd,noatime  0 0
 
-#######################################
-# Prepare chroot configuration
-#######################################
+# Btrfs logs
+UUID=$ROOT_UUID  /var/log   btrfs  subvol=@log,compress=zstd,noatime  0 0
 
-msg "Preparing chroot configuration..."
+# Btrfs cache
+UUID=$ROOT_UUID  /var/cache btrfs  subvol=@cache,compress=zstd,noatime  0 0
 
-# Bash printf safely quotes the password for insertion into the chroot script.
-# This replaces the previous Python dependency.
-USER_PASSWORD_ESCAPED="$(printf '%q' "$USER_PASSWORD")"
+# EFI
+UUID=$EFI_UUID   /boot/efi  vfat   umask=0077  0 2
+EOF
 
-unset USER_PASSWORD
+cat "$MNT/etc/fstab"
 
-cat > "$MOUNTPOINT/root/artix-configure.sh" <<EOF
-#!/usr/bin/env bash
+# ------------------------------------------------------------
+# Copy chroot installer
+# ------------------------------------------------------------
 
-set -Eeuo pipefail
+info "Creating chroot installation script..."
 
-USERNAME="$USERNAME"
-HOSTNAME="$HOSTNAME"
-TIMEZONE="$TIMEZONE"
-LOCALE="$LOCALE"
+cat > "$MNT$CHROOT_SCRIPT" <<'CHROOT_SCRIPT'
+#!/bin/bash
 
-USER_PASSWORD=$USER_PASSWORD_ESCAPED
+set -euo pipefail
 
-#######################################
-# Basic system configuration
-#######################################
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
 
-echo "Configuring timezone..."
+info() {
+    echo -e "${CYAN}==> $1${NC}"
+}
 
-ln -sf "/usr/share/zoneinfo/\$TIMEZONE" /etc/localtime
+success() {
+    echo -e "${GREEN}==> $1${NC}"
+}
+
+warn() {
+    echo -e "${YELLOW}WARNING: $1${NC}"
+}
+
+die() {
+    echo -e "${RED}ERROR: $1${NC}" >&2
+    exit 1
+}
+
+HOSTNAME="artix"
+USERNAME="mike"
+TIMEZONE="America/New_York"
+LOCALE="en_US.UTF-8"
+
+# ============================================================
+# Base configuration
+# ============================================================
+
+info "Configuring timezone..."
+
+ln -sf "/usr/share/zoneinfo/$TIMEZONE" /etc/localtime
 hwclock --systohc
 
-#######################################
-# Locale
-#######################################
+info "Configuring locale..."
 
-echo "Configuring locale..."
-
-sed -i "s/^#\${LOCALE}/\${LOCALE}/" /etc/locale.gen
+sed -i "s/^#\(${LOCALE} UTF-8\)/\1/" /etc/locale.gen
 
 locale-gen
 
-cat > /etc/locale.conf <<LOCALEEOF
-LANG=\${LOCALE}
-LC_ADDRESS=\${LOCALE}
-LC_IDENTIFICATION=\${LOCALE}
-LC_MEASUREMENT=\${LOCALE}
-LC_MONETARY=\${LOCALE}
-LC_NAME=\${LOCALE}
-LC_NUMERIC=\${LOCALE}
-LC_PAPER=\${LOCALE}
-LC_TELEPHONE=\${LOCALE}
-LC_TIME=\${LOCALE}
-LOCALEEOF
+cat > /etc/locale.conf <<EOF
+LANG=$LOCALE
+EOF
 
-#######################################
-# Hostname
-#######################################
+info "Configuring hostname..."
 
-echo "Configuring hostname..."
+echo "$HOSTNAME" > /etc/hostname
 
-echo "\$HOSTNAME" > /etc/hostname
-
-cat > /etc/hosts <<HOSTEOF
+cat > /etc/hosts <<EOF
 127.0.0.1   localhost
 ::1         localhost
-127.0.1.1   \$HOSTNAME.localdomain \$HOSTNAME
-HOSTEOF
+127.0.1.1   ${HOSTNAME}.localdomain ${HOSTNAME}
+EOF
 
-#######################################
-# Pacman configuration
-#######################################
+# ============================================================
+# Arch Linux repository support
+# ============================================================
 
-echo "Configuring pacman..."
+info "Installing Artix Arch Linux repository support..."
 
-sed -i 's/^#Color/Color/' /etc/pacman.conf
-sed -i 's/^#ParallelDownloads = 5/ParallelDownloads = 5/' /etc/pacman.conf
+pacman -S --needed --noconfirm artix-archlinux-support
 
-#######################################
+info "Enabling Arch Linux repositories..."
+
+cat >> /etc/pacman.conf <<'EOF'
+
+# ============================================================
+# Arch Linux repositories
+#
+# Keep these BELOW the Artix repositories.
+# Artix packages take precedence where both provide a package.
+# ============================================================
+
+[extra]
+Include = /etc/pacman.d/mirrorlist-arch
+
+[multilib]
+Include = /etc/pacman.d/mirrorlist-arch
+EOF
+
+info "Populating Arch Linux keys..."
+
+pacman-key --populate archlinux
+
+info "Synchronizing repositories..."
+
+pacman -Syy
+
+info "Performing full system upgrade..."
+
+pacman -Syu --noconfirm
+
+# ============================================================
 # XLibre repository
-#######################################
+# ============================================================
 
-echo "Installing XLibre signing key..."
+info "Installing XLibre repository signing tools..."
+
+pacman -S --needed --noconfirm curl
+
+info "Installing XLibre Artix signing key..."
 
 curl -fsSL \
     https://xlibre-artix.github.io/xlibre-artixlinux.asc \
@@ -398,168 +407,114 @@ pacman-key --lsign-key 2AFFCD7B42ADD2E7
 
 rm -f /tmp/xlibre-artixlinux.asc
 
-#######################################
-# Add XLibre repository
-#######################################
+info "Adding XLibre stable repository..."
 
-echo "Adding XLibre repository..."
+# The XLibre repository must be after [system] but before [world].
+# Insert it immediately before the [world] repository.
 
-if ! grep -q '^\\[xlibre-stable\\]' /etc/pacman.conf; then
-    sed -i '/^\\[world\\]/i\\[xlibre-stable\\]\\nServer = https://github.com/xlibre-artix/stable/releases/download/\$arch\\n' /etc/pacman.conf
+if ! grep -q '^\[xlibre-stable\]' /etc/pacman.conf; then
+    sed -i '/^\[world\]/i\
+[xlibre-stable]\
+Server = https://github.com/xlibre-artix/stable/releases/download/$arch\
+' /etc/pacman.conf
 fi
 
-#######################################
-# Update Artix
-#######################################
+info "Synchronizing XLibre repository..."
 
-echo "Updating Artix package database..."
+pacman -Syy
 
-pacman -Syyu --noconfirm
-
-#######################################
-# Arch Linux repository support
-#######################################
-
-echo "Installing Arch Linux repository support..."
-
-pacman -S --needed --noconfirm artix-archlinux-support
-
-#######################################
-# Arch repositories
-#######################################
-
-echo "Configuring Arch repositories..."
-
-# Remove any existing Arch repo blocks so we do not duplicate them.
-sed -i '/^\\[core\\]/,/^$/d' /etc/pacman.conf
-sed -i '/^\\[extra\\]/,/^$/d' /etc/pacman.conf
-sed -i '/^\\[multilib\\]/,/^$/d' /etc/pacman.conf
-sed -i '/^\\[community\\]/,/^$/d' /etc/pacman.conf
-
-cat >> /etc/pacman.conf <<'PACMANEOF
-
-# Arch Linux repositories
-# DO NOT enable Arch core on Artix.
-# Artix [system] provides the core layer.
-
-[extra]
-Include = /etc/pacman.d/mirrorlist-arch
-
-[multilib]
-Include = /etc/pacman.d/mirrorlist-arch
-PACMANEOF
-
-#######################################
-# Populate Arch keyring
-#######################################
-
-echo "Populating Arch Linux keys..."
-
-pacman-key --populate archlinux
-
-#######################################
-# Update after Arch repository setup
-#######################################
-
-echo "Performing full system update..."
-
-pacman -Syyu --noconfirm
-
-#######################################
+# ============================================================
 # User
-#######################################
+# ============================================================
 
-echo "Creating user \$USERNAME..."
+info "Creating user account: $USERNAME"
 
-if ! id "\$USERNAME" >/dev/null 2>&1; then
-    useradd \
-        -m \
-        -G wheel,audio,video,networkmanager \
-        -s /bin/bash \
-        "\$USERNAME"
-else
-    usermod -aG wheel,audio,video,networkmanager "\$USERNAME"
+if ! id "$USERNAME" >/dev/null 2>&1; then
+    useradd -m -G wheel,video,audio -s /bin/bash "$USERNAME"
 fi
 
-#######################################
-# Set user password
-#######################################
+echo
+echo "============================================================"
+echo "Set the password for user: $USERNAME"
+echo "============================================================"
+echo
 
-echo "Setting user password..."
+passwd "$USERNAME"
 
-printf '%s:%s\\n' "\$USERNAME" "\$USER_PASSWORD" | chpasswd
+# ============================================================
+# Sudo
+# ============================================================
 
-unset USER_PASSWORD
+info "Configuring normal password-protected sudo..."
 
-#######################################
-# Lock root
-#######################################
+# Remove any existing wheel rule we may have created previously.
+sed -i '/^[[:space:]]*%wheel[[:space:]]\+ALL=(ALL:ALL)[[:space:]]\+ALL/d' /etc/sudoers
 
-echo "Locking root account..."
+# Remove any accidental NOPASSWD wheel rule.
+sed -i '/^[[:space:]]*%wheel[[:space:]]\+ALL=(ALL:ALL)[[:space:]]\+NOPASSWD:/d' /etc/sudoers
 
-passwd -l root
+# Add normal wheel sudo permission.
+cat >> /etc/sudoers <<'EOF'
 
-#######################################
-# Passwordless sudo
-#######################################
+# Allow wheel group to use sudo with password authentication.
+%wheel ALL=(ALL:ALL) ALL
+EOF
 
-echo "Configuring passwordless sudo..."
+chmod 440 /etc/sudoers
 
-mkdir -p /etc/sudoers.d
+# ============================================================
+# Core desktop / services
+# ============================================================
 
-cat > /etc/sudoers.d/wheel-nopasswd <<SUDOEOF
-%wheel ALL=(ALL:ALL) NOPASSWD: ALL
-SUDOEOF
+info "Installing desktop and system packages..."
 
-chmod 0440 /etc/sudoers.d/wheel-nopasswd
+pacman -S --needed --noconfirm \
+    dbus \
+    dbus-openrc \
+    polkit \
+    polkit-gnome \
+    networkmanager \
+    networkmanager-openrc \
+    elogind \
+    elogind-openrc \
+    lightdm \
+    lightdm-gtk-greeter \
+    lightdm-openrc \
+    qtile \
+    python-psutil \
+    alacritty \
+    rofi \
+    dunst \
+    picom \
+    thunar \
+    git \
+    neovim \
+    tmux \
+    wget \
+    curl \
+    xorg-xrandr \
+    xorg-xset \
+    xorg-xsetroot \
+    xorg-xmodmap \
+    xorg-xinit \
+    xorg-xdpyinfo
 
-visudo -c
-
-#######################################
-# Enable services
-#######################################
-
-echo "Enabling NetworkManager..."
-
-rc-update add NetworkManager default
-
-echo "Enabling elogind..."
-
-rc-update add elogind boot
-
-#######################################
+# ============================================================
 # XLibre
-#######################################
+# ============================================================
 
-echo "Installing XLibre..."
+info "Installing XLibre..."
 
 pacman -S --needed --noconfirm \
     xlibre-meta \
-    xlibre-video-amdgpu
+    xlibre-xf86-video-amdgpu \
+    xlibre-xf86-input-libinput
 
-#######################################
-# X11 utilities
-#######################################
+# ============================================================
+# AMD graphics / Vulkan
+# ============================================================
 
-echo "Installing X11 utilities..."
-
-pacman -S --needed --noconfirm \
-    xorg-xinit \
-    xorg-xrandr \
-    xorg-xsetroot \
-    xorg-xdpyinfo \
-    xorg-xset \
-    xorg-xprop \
-    xorg-xinput \
-    xorg-xev \
-    xorg-xmodmap \
-    xorg-xwayland
-
-#######################################
-# AMD graphics
-#######################################
-
-echo "Installing AMD graphics stack..."
+info "Installing AMD graphics stack..."
 
 pacman -S --needed --noconfirm \
     mesa \
@@ -569,386 +524,366 @@ pacman -S --needed --noconfirm \
     vulkan-icd-loader \
     lib32-vulkan-icd-loader \
     libva-mesa-driver \
-    mesa-vdpau \
-    mesa-utils
+    mesa-vdpau
 
-#######################################
-# Qtile
-#######################################
-
-echo "Installing Qtile..."
-
-pacman -S --needed --noconfirm \
-    qtile \
-    python-psutil
-
-#######################################
-# Terminal
-#######################################
-
-echo "Installing Alacritty..."
-
-pacman -S --needed --noconfirm \
-    alacritty
-
-#######################################
-# LightDM
-#######################################
-
-echo "Installing LightDM..."
-
-pacman -S --needed --noconfirm \
-    lightdm \
-    lightdm-gtk-greeter \
-    lightdm-openrc
-
-#######################################
-# Qtile desktop entry
-#######################################
-
-echo "Creating Qtile session..."
-
-mkdir -p /usr/share/xsessions
-
-cat > /usr/share/xsessions/qtile.desktop <<QTILEEOF
-[Desktop Entry]
-Name=Qtile
-Comment=Qtile Window Manager
-Exec=qtile start
-TryExec=qtile
-Type=Application
-DesktopNames=Qtile
-QTILEEOF
-
-#######################################
-# Enable LightDM
-#######################################
-
-echo "Enabling LightDM..."
-
-rc-update add lightdm default
-
-#######################################
-# Desktop utilities
-#######################################
-
-echo "Installing desktop utilities..."
-
-pacman -S --needed --noconfirm \
-    rofi \
-    dunst \
-    picom \
-    feh \
-    thunar \
-    thunar-volman \
-    tumbler \
-    pavucontrol \
-    flameshot \
-    i3lock \
-    wmctrl \
-    xclip \
-    xdotool \
-    network-manager-applet \
-    gvfs \
-    gvfs-mtp \
-    file-roller
-
-#######################################
-# Fonts
-#######################################
-
-echo "Installing fonts..."
-
-pacman -S --needed --noconfirm \
-    ttf-jetbrains-mono-nerd \
-    noto-fonts \
-    noto-fonts-emoji
-
-#######################################
+# ============================================================
 # PipeWire
-#######################################
+# ============================================================
 
-echo "Installing PipeWire..."
+info "Installing PipeWire..."
 
 pacman -S --needed --noconfirm \
     pipewire \
-    pipewire-alsa \
     pipewire-pulse \
     wireplumber \
-    rtkit
+    alsa-utils
 
-if pacman -Si pipewire-openrc >/dev/null 2>&1; then
-    pacman -S --needed --noconfirm pipewire-openrc
-    rc-update add pipewire default || true
-fi
-
-#######################################
+# ============================================================
 # Bluetooth
-#######################################
+# ============================================================
 
-echo "Installing Bluetooth..."
+info "Installing Bluetooth..."
 
 pacman -S --needed --noconfirm \
     bluez \
     bluez-utils \
-    blueman
+    blueman \
+    bluez-openrc
 
-if pacman -Si bluez-openrc >/dev/null 2>&1; then
-    pacman -S --needed --noconfirm bluez-openrc
-    rc-update add bluetooth default || true
-fi
+# ============================================================
+# Flatpak + XDG portals
+# ============================================================
 
-#######################################
-# Flatpak
-#######################################
-
-echo "Installing Flatpak..."
+info "Installing Flatpak and XDG portals..."
 
 pacman -S --needed --noconfirm \
-    flatpak
+    flatpak \
+    xdg-desktop-portal \
+    xdg-desktop-portal-gtk
 
-#######################################
-# Steam
-#######################################
+# ============================================================
+# ZarisWM development environment
+# ============================================================
 
-echo "Installing Steam..."
-
-pacman -S --needed --noconfirm \
-    steam
-
-#######################################
-# General utilities
-#######################################
-
-echo "Installing general utilities..."
+info "Installing ZarisWM development tools..."
 
 pacman -S --needed --noconfirm \
-    unzip \
-    zip \
-    p7zip \
-    rsync \
-    htop \
-    btop \
-    tree \
-    man-db \
-    man-pages \
-    bash-completion \
-    which \
-    openssh \
-    usbutils \
-    pciutils
-
-#######################################
-# ZarisWM development dependencies
-#######################################
-
-echo "Installing ZarisWM development dependencies..."
-
-pacman -S --needed --noconfirm \
+    base-devel \
     gcc \
-    clang \
     make \
     cmake \
     meson \
     ninja \
     pkgconf \
-    git \
-    gdb \
-    valgrind \
+    python \
+    python-pip \
+    python-setuptools \
     libx11 \
-    libxext \
+    libxft \
     libxinerama \
     libxrandr \
     libxrender \
-    libxfixes \
-    libxcomposite \
-    libxdamage \
     libxcb \
     xcb-util \
     xcb-util-wm \
     xcb-util-keysyms \
-    xcb-util-image \
-    xcb-util-renderutil \
-    xcb-util-cursor \
-    libxkbcommon \
-    libxkbcommon-x11
+    xcb-util-renderutil
 
-#######################################
-# Firefox
-#######################################
+# ============================================================
+# LightDM
+# ============================================================
 
-echo "Installing Firefox..."
+info "Configuring LightDM..."
 
-pacman -S --needed --noconfirm \
-    firefox
+mkdir -p /etc/lightdm
 
-#######################################
-# Flathub
-#######################################
+if [[ -f /etc/lightdm/lightdm.conf ]]; then
+    if ! grep -q '^greeter-session=lightdm-gtk-greeter' /etc/lightdm/lightdm.conf; then
+        cat >> /etc/lightdm/lightdm.conf <<'EOF'
 
-echo "Adding Flathub..."
+[Seat:*]
+greeter-session=lightdm-gtk-greeter
+EOF
+    fi
+else
+    cat > /etc/lightdm/lightdm.conf <<'EOF'
+[Seat:*]
+greeter-session=lightdm-gtk-greeter
+EOF
+fi
+
+# ============================================================
+# Qtile X11 session
+# ============================================================
+
+info "Creating Qtile X11 session..."
+
+mkdir -p /usr/share/xsessions
+
+cat > /usr/share/xsessions/qtile.desktop <<'EOF'
+[Desktop Entry]
+Name=Qtile
+Comment=Qtile X11 Session
+Exec=qtile start
+Type=Application
+Keywords=wm;tiling
+EOF
+
+# ============================================================
+# Basic Qtile configuration
+# ============================================================
+
+info "Creating a minimal Qtile configuration..."
+
+mkdir -p "/home/$USERNAME/.config/qtile"
+
+cat > "/home/$USERNAME/.config/qtile/config.py" <<'EOF'
+from libqtile import bar, layout, qtile, widget
+from libqtile.config import Key, Group
+from libqtile.lazy import lazy
+
+mod = "mod4"
+
+keys = [
+    Key([mod], "Return", lazy.spawn("alacritty")),
+    Key([mod], "d", lazy.spawn("rofi -show drun")),
+
+    Key([mod], "q", lazy.window.kill()),
+
+    Key([mod, "control"], "r", lazy.reload_config()),
+    Key([mod, "control"], "q", lazy.shutdown()),
+
+    Key([mod], "h", lazy.layout.left()),
+    Key([mod], "l", lazy.layout.right()),
+    Key([mod], "j", lazy.layout.down()),
+    Key([mod], "k", lazy.layout.up()),
+
+    Key([mod, "shift"], "h", lazy.layout.shuffle_left()),
+    Key([mod, "shift"], "l", lazy.layout.shuffle_right()),
+    Key([mod, "shift"], "j", lazy.layout.shuffle_down()),
+    Key([mod, "shift"], "k", lazy.layout.shuffle_up()),
+]
+
+groups = [
+    Group("1"),
+    Group("2"),
+    Group("3"),
+    Group("4"),
+    Group("5"),
+    Group("6"),
+    Group("7"),
+    Group("8"),
+    Group("9"),
+    Group("0"),
+]
+
+for i, group in enumerate(groups):
+    keys.append(
+        Key([mod], str(i + 1 if i < 9 else 0),
+            lazy.group[group.name].toscreen())
+    )
+
+layouts = [
+    layout.MonadTall(
+        border_width=2,
+        margin=8,
+    ),
+    layout.Max(),
+]
+
+widget_defaults = dict(
+    font="sans",
+    fontsize=14,
+    padding=3,
+)
+
+screens = [
+    Screen(
+        top=bar.Bar(
+            [
+                widget.GroupBox(),
+                widget.Spacer(),
+                widget.Clock(format="%Y-%m-%d %H:%M"),
+            ],
+            24,
+        ),
+    ),
+]
+
+floating_layout = layout.Floating()
+auto_fullscreen = True
+focus_on_window_activation = "smart"
+wmname = "LG3D"
+EOF
+
+chown -R "$USERNAME:$USERNAME" "/home/$USERNAME/.config"
+
+# ============================================================
+# OpenRC services
+# ============================================================
+
+info "Enabling OpenRC services..."
+
+rc-update add networkmanager default
+rc-update add dbus default
+rc-update add lightdm default
+rc-update add bluetooth default
+rc-update add elogind boot
+
+# ============================================================
+# Flatpak / Flathub
+# ============================================================
+
+info "Adding Flathub..."
 
 flatpak remote-add --if-not-exists \
     flathub \
-    https://dl.flathub.org/repo/flathub.flatpakrepo
+    https://flathub.org/repo/flathub.flatpakrepo
 
-#######################################
+# ============================================================
 # GRUB
-#######################################
+# ============================================================
 
-echo "Installing GRUB..."
+info "Installing GRUB..."
 
 grub-install \
     --target=x86_64-efi \
     --efi-directory=/boot/efi \
-    --bootloader-id=Artix \
-    --recheck
-
-#######################################
-# GRUB configuration
-#######################################
-
-echo "Generating GRUB configuration..."
+    --bootloader-id=Artix
 
 grub-mkconfig -o /boot/grub/grub.cfg
 
-#######################################
-# mkinitcpio
-#######################################
+# ============================================================
+# Final ownership / permissions
+# ============================================================
 
-echo "Regenerating initramfs..."
+chown "$USERNAME:$USERNAME" "/home/$USERNAME"
 
-mkinitcpio -P
-
-#######################################
-# Final update
-#######################################
-
-echo "Performing final system update..."
-
-pacman -Syu --noconfirm
-
-#######################################
-# Permissions
-#######################################
-
-chmod 700 /home/\$USERNAME
-chown -R "\$USERNAME:\$USERNAME" /home/\$USERNAME
-
-#######################################
+# ============================================================
 # Verification
-#######################################
+# ============================================================
 
 echo
-echo "=========================================="
-echo " Installation verification"
-echo "=========================================="
-echo
-
-echo "Kernel:"
-uname -r
-
-echo
-echo "XLibre:"
-if command -v xdpyinfo >/dev/null 2>&1; then
-    xdpyinfo 2>/dev/null | grep -i vendor || true
-fi
-
-echo
-echo "Qtile:"
-qtile --version || true
-
-echo
-echo "NetworkManager:"
-rc-status | grep -i NetworkManager || true
-
-echo
-echo "LightDM:"
-rc-status | grep -i lightdm || true
+echo "============================================================"
+echo "Installation checks"
+echo "============================================================"
 
 echo
 echo "User:"
-id "\$USERNAME"
+id "$USERNAME"
 
 echo
-echo "Sudo configuration:"
-visudo -c
+echo "Btrfs:"
+findmnt -t btrfs
 
 echo
-echo "=========================================="
-echo " Installation configuration complete"
-echo "=========================================="
-echo
-echo "User:       \$USERNAME"
-echo "Hostname:   \$HOSTNAME"
-echo "Filesystem: XFS"
-echo "Init:       OpenRC"
-echo "Display:    XLibre"
-echo "WM:         Qtile"
-echo "Login:      LightDM"
-echo
-echo "Root account is LOCKED."
-echo "User \$USERNAME has PASSWORDLESS sudo."
-echo
-EOF
-
-chmod 700 "$MOUNTPOINT/root/artix-configure.sh"
-
-#######################################
-# Chroot
-#######################################
-
-msg "Entering installed system..."
-
-artix-chroot "$MOUNTPOINT" /root/artix-configure.sh
-
-#######################################
-# Cleanup
-#######################################
-
-msg "Removing temporary configuration..."
-
-rm -f "$MOUNTPOINT/root/artix-configure.sh"
-
-#######################################
-# Final filesystem sync
-#######################################
-
-sync
-
-#######################################
-# Show installed system
-#######################################
+echo "EFI:"
+findmnt /boot/efi
 
 echo
-echo "=============================================="
-echo "       ARTIX INSTALLATION COMPLETE"
-echo "=============================================="
+echo "OpenRC services:"
+rc-status --all || true
+
 echo
-echo "Drive:      $DISK"
-echo "Filesystem: XFS"
-echo "Init:       OpenRC"
-echo "Display:    XLibre"
-echo "WM:         Qtile"
-echo "Login:      LightDM"
-echo "User:       $USERNAME"
-echo "Hostname:   $HOSTNAME"
+echo "Arch repositories:"
+grep -A2 -E '^\[(extra|multilib)\]' /etc/pacman.conf || true
+
 echo
-echo "Root account: LOCKED"
-echo "Sudo:          PASSWORDLESS"
+echo "XLibre:"
+pacman -Q | grep -E '^xlibre' || true
+
+echo
+echo "Qtile:"
+pacman -Q qtile || true
+
+echo
+echo "============================================================"
+echo "Installation inside chroot is complete."
+echo "============================================================"
+echo
+echo "The root account password was NOT configured."
+echo "The user account '$USERNAME' has a password."
+echo "sudo requires the '$USERNAME' password."
+echo
+echo "Exit the chroot and reboot from the live environment."
+echo
+CHROOT_SCRIPT
+
+chmod +x "$MNT$CHROOT_SCRIPT"
+
+# ------------------------------------------------------------
+# Run chroot installation
+# ------------------------------------------------------------
+
+info "Entering the new Artix installation..."
+
+artix-chroot "$MNT" /root/artix-chroot-install.sh
+
+# ------------------------------------------------------------
+# Clean up
+# ------------------------------------------------------------
+
+info "Removing temporary chroot installer..."
+
+rm -f "$MNT$CHROOT_SCRIPT"
+
+# Restore resolv.conf as a normal symlink for the installed system.
+rm -f "$MNT/etc/resolv.conf"
+
+if [[ -e /mnt/run/systemd/resolve/stub-resolv.conf ]]; then
+    ln -s /run/systemd/resolve/stub-resolv.conf "$MNT/etc/resolv.conf"
+fi
+
+# ------------------------------------------------------------
+# Final information
+# ------------------------------------------------------------
+
+success "Artix installation completed."
+
+echo
+echo "============================================================"
+echo "                  INSTALLATION COMPLETE"
+echo "============================================================"
+echo
+echo "Installed:"
+echo
+echo "  Artix Linux"
+echo "  OpenRC"
+echo "  Btrfs"
+echo "  GRUB / UEFI"
+echo "  NetworkManager"
+echo "  elogind"
+echo "  XLibre"
+echo "  AMDGPU"
+echo "  Qtile"
+echo "  LightDM"
+echo "  PipeWire"
+echo "  Bluetooth"
+echo "  Flatpak"
+echo "  XDG Desktop Portals"
+echo "  Rofi"
+echo "  Dunst"
+echo "  Picom"
+echo "  Thunar"
+echo "  Alacritty"
+echo
+echo "User:     $USERNAME"
+echo "Hostname: $HOSTNAME"
+echo
+echo "IMPORTANT:"
+echo "The root account password was not configured."
+echo "Your '$USERNAME' account has normal password-protected sudo."
 echo
 echo "Unmounting filesystems..."
 echo
 
-umount -R "$MOUNTPOINT"
-
-sync
+umount -R "$MNT"
 
 echo
-success "Installation complete."
+success "You can now reboot."
 echo
-echo "Remove the installation media and reboot."
+echo "Remove the Artix USB when the system restarts."
 echo
-read -r -p "Press ENTER to reboot, or Ctrl+C to remain in the live environment..."
+read -r -p "Press Enter to reboot, or Ctrl+C to remain in the live environment..."
 
 reboot
